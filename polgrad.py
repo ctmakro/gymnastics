@@ -54,21 +54,36 @@ def evaluate_coolness(rewards,discount_factor=.99):
 
     """
 
-    # for each reward:
-    for i in range(length):
-        reward_i = rewards[i]
+    if False:
+        # for each reward:
+        for i in range(length):
+            reward_i = rewards[i]
 
-        # what we meant to do:
-        # coolness[i] += reward
-        # coolness[i-1] += reward * .9
-        # coolness[i-2] += reward * .9 * .9
-        # coolness[i-3] += reward * .9 * .9 * .9
+            # what we meant to do:
+            # coolness[i] += reward
+            # coolness[i-1] += reward * .9
+            # coolness[i-2] += reward * .9 * .9
+            # coolness[i-3] += reward * .9 * .9 * .9
 
-        # what we actually did (to optimize for speed):
-        for k in reversed(range(i+1)): # iterate k from i to 0
-            coolness[k] += reward_i
-            # reward_i *= .9
-            reward_i *= discount_factor
+            # what we actually did (to optimize for speed):
+            for k in reversed(range(i+1)): # iterate k from i to 0
+                coolness[k] += reward_i
+                # reward_i *= .9
+                reward_i *= discount_factor
+    else:
+        # for each reward:
+        for i in range(length):
+            reward_i = rewards[i]
+
+            # what we meant to do:
+            # coolness[i] += reward
+            # coolness[i-1] += reward * .9
+            # coolness[i-2] += reward * .9 * .9
+            # coolness[i-3] += reward * .9 * .9 * .9
+
+            # what we actually did (to optimize for speed):
+            coolness[0:i+1] += reward_i
+
 
     # done.
     return coolness
@@ -177,10 +192,11 @@ def do_episode_collect_trajectory(agent, env, max_steps, render=True, feed=True,
     actions=[] # what we did,
     rewards=[] # what we get, each time.
 
-    observations.append(env.reset())
+    observation = env.reset()
     agent.wakeup() # notify the agent
 
     for t in range(max_steps):
+        observations.append(observation)
         action = agent.act(observations[-1])
         # acting based on last observation and last observation only.
 
@@ -188,9 +204,9 @@ def do_episode_collect_trajectory(agent, env, max_steps, render=True, feed=True,
         (observation, reward, done, _info) = env.step(action)
         rewards.append(reward)
 
-        if render and t%5==0 or realtime: env.render()
+        if render and (t%10==0 or realtime==True): env.render()
         if done : break
-        observations.append(observation)
+
 
     if feed:
         agent.feed_episodic_data((observations,actions,rewards))
@@ -218,17 +234,20 @@ class nnagent(object):
         self.discount_factor = discount_factor
 
         # our network
-        model = Sequential()
-
         input_shape = num_of_observations
+        i = Input(shape=(input_shape,))
+        h = Dense(10,activation='tanh')(i)
+        # h = Dense(2,activation='tanh')(i)
 
-        model.add(Dense(6,activation='tanh',input_shape=(input_shape,)))
-        # model.add(Dense(4,activation='sigmoid'))
-        # model.add(Dense(3,activation='tanh'))
-        # 3 hidden layers
+        # h = Dense(4,activation='tanh')(h)
+        # h = Dense(4,activation='tanh')(h)
+        # h = Dense(num_of_actions,activation='tanh')(h)
 
-        model.add(Dense(num_of_actions))
-        model.add(Activation('softmax'))
+
+        h = Dense(num_of_actions)(h)
+        out = Activation('softmax')(h)
+
+        model = Model(input=i,output=out)
 
         # as described in section above, we want to
         # maximize(log(network_output) * action_coolness)
@@ -237,7 +256,7 @@ class nnagent(object):
         def policy_loss(y_true,y_pred):
             network_output = y_pred
             action_coolness = y_true
-            return - K.mean(K.log(network_output+1e-9) * action_coolness, axis=-1)
+            return - K.mean(K.log(network_output+1e-10) * action_coolness)
 
         model.compile(loss=policy_loss,optimizer=Adam())
         self.model = model
@@ -296,9 +315,9 @@ class nnagent(object):
         observations,coolness = self.observations, self.action_coolness
 
         model.fit(observations, coolness,
-                  batch_size=min(len(observations),10000),
+                  batch_size=min(len(observations),5000),
                   nb_epoch=epochs,
-                  shuffle=True)
+                  shuffle=False)
 
     # (optionally) throw away all data
     def dump(self):
@@ -307,7 +326,7 @@ class nnagent(object):
         self.action_coolness = np.zeros((0,self.num_of_actions))
 
     def bad_kids_eaten_by_the_wolf(self): # discard the least cool actions from history.
-        num_stay = 500
+        num_stay = 50000
         length = len(self.action_coolness)
         if length <= num_stay:
             return
@@ -320,32 +339,46 @@ class nnagent(object):
         self.action_coolness = np.array([self.action_coolness[i] for i in stay_indices])
         self.observations = np.array([self.observations[i] for i in stay_indices])
 
+    def drop_previous(self):
+        num_stay = 3000
+        length = len(self.action_coolness)
+        if length <= num_stay:
+            return
+        else:
+            print('wolf ate',length - num_stay,'kids')
+
+        self.action_coolness = self.action_coolness[length - num_stay:length]
+        self.observations = self.observations[length - num_stay:length]
+
+
 
 from gym import wrappers
 
 # give it a try
-agent = nnagent(num_of_actions=2,num_of_observations=4,discount_factor=.95)
-env = gym.make('CartPole-v0')
-env = wrappers.Monitor(env,'./cartpole-experiment-2')
+# env = gym.make('Acrobot-v1')
+env = gym.make('CartPole-v1')
+# env = wrappers.Monitor(env,'./experiment-3',force=True)
+agent = nnagent(
+num_of_actions=env.action_space.n,
+num_of_observations=env.observation_space.shape[0],
+discount_factor=.999999
+)
 
 def r(times=3):
-    # to achive good result, you need a watch phase and a train phase
-    # in watch phase, agent collect trajectory from real world;
-    # in train phase, agent learn from collected trajectory.
-    # YOU SHOULD NOT start learning DIRECTLY. learning from little data is dangerous.
 
     for k in range(times):
         print('training loop',k,'/',times)
-        for i in range(1): # do 20 episodes. enough exploration is key to RL
+        for i in range(1): # do 1 episode
             print('play episode:',i)
-            episodic_data = do_episode_collect_trajectory(agent,env,max_steps=1000,realtime=True,render=True,feed=True)
+            episodic_data = do_episode_collect_trajectory(agent,env,max_steps=5000,render=True,feed=True)
             print('length of episode:',len(episodic_data[0]))
             print('total reward of episode:',np.sum(episodic_data[2]))
 
+        if len(agent.observations)> 200: # wait until data became diverse enough
+            agent.train(epochs=min(140,len(agent.observations)))
+            # agent.dump()
+        # agent.drop_previous()
         agent.bad_kids_eaten_by_the_wolf() # kill bad kids
-
-        if len(agent.observations)> 100: # wait until data became diverse enough
-            agent.train(epochs=len(agent.observations))
 
 def check():
     episodic_data = do_episode_collect_trajectory(agent,env,max_steps=1000,render=True,feed=False,realtime=True)
