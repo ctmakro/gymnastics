@@ -3,9 +3,37 @@ import numpy as np
 import gym
 from gym.spaces import Discrete, Box
 
-# policy gradient method
+# (naive) policy gradient method for Reinforcement Learning
 # by Qin Yongliang
 # 2017 01 06
+
+'''
+for English readers: this is the only section written in Chinese. Just skip it, everything important is written in English(scroll down to see.)
+
+To understand this piece of code (even with comments), you should be familiar with the training of supervised neural networks.
+
+写在前面：各位读者，这份代码实现的是增强学习的“决策梯度”方法。
+要读懂这个代码（虽然很多注释），你至少应该熟悉怎样训练监督神经网络。
+
+假设我们有一个神经网络，输入是当前的环境状态，输出是下一步可选的每一个操作的概率。这里的输出一般称为【决策】。
+初始状态下，我们应该会对所有操作输出一样的概率，也就是随机决策。
+
+要训练神经网络，我们就必须提供【每一种给定状态下，能够最大化未来收益的操作】。
+然后我们就可以用梯度下降法训练神经网络，提高网络输出这些操作的概率。可是我们没有这个数据。
+
+增强学习要解决的问题，正是每做一步操作时，并不都会获得奖励（所以没办法确定每一步是好是坏）。但我们还是可以用一个函数，近似地评估之前每一步操作的“牛逼程度”，这样我们仍然可以利用梯度下降对网络进行训练，以获得更好的决策。
+
+由于一个神经网络的行为，也就是【决策】，由这个网络的参数决定，而我们需要将这些参数对预期收益的梯度，进行梯度下降（或者上升）来最大化收益，因此这个方法称为“决策梯度”方法。
+
+在完成一个回合(one episode)之后，如果我们可以给我们的每一步行为(actions)打一个“牛逼程度”(coolness)的分数，我们就可以训练一个神经网络模型，输入是每一步看到的环境状态(state)，输出是给定状态下选择每一个行为的概率(probability of each action)，误差函数是 【- mean(log(网络输出的概率分布)*行为的牛逼程度)】。这样，我们就可以将网络的输出（也就是决策的概率分布）中，具有更高期望收益的那些操作的发生概率提高，反之亦然。
+
+很多教程里用的说法是梯度上升，我在mean前面加了负号，转换成梯度下降，于是就可以用keras这样的框架进行训练，极大地减少了自己写训练代码的痛苦。
+
+给每个操作打牛逼程度(coolness)分数的原理和具体方法，在下面用英文给出，代码非常简单。
+
+我用的是最简单的【时间指数折扣】(time exponential reward)，根据每一个操作与获得的某个奖励之间的时间间隔给该操作打分（操作和奖励之间隔得越久，该操作对最终获得奖励的贡献就越少，该操作得分越低），这个方法的bias低，但是variance高，收敛较慢。
+
+'''
 
 # evaluate the coolness of a list of actions, based on the rewards.
 def evaluate_coolness(rewards,discount_factor=.99):
@@ -41,6 +69,8 @@ def evaluate_coolness(rewards,discount_factor=.99):
     formally speaking,
     P(reward|action) = 0.9 ^ time_between_them
 
+    where gamma = 0.9 is the DISCOUNT FACTOR.
+
     therefore,
     coolness[i] = rewards[i] + rewards[i+1] * 0.9 + rewards[i+2] * 0.9 * 0.9...
     as stated above, the coolness decreases exponentially for future rewards.
@@ -54,32 +84,34 @@ def evaluate_coolness(rewards,discount_factor=.99):
 
     """
 
-    if False:
+    if discount_factor<1.0 : # if discount_factor comes into play
         # for each reward:
         for i in range(length):
             reward_i = rewards[i]
 
             # what we meant to do:
-            # coolness[i] += reward
-            # coolness[i-1] += reward * .9
-            # coolness[i-2] += reward * .9 * .9
-            # coolness[i-3] += reward * .9 * .9 * .9
+            # coolness[i] += reward[i]
+            # coolness[i-1] += reward[i] * .9
+            # coolness[i-2] += reward[i] * .9 * .9
+            # coolness[i-3] += reward[i] * .9 * .9 * .9
 
             # what we actually did (to optimize for speed):
             for k in reversed(range(i+1)): # iterate k from i to 0
                 coolness[k] += reward_i
-                # reward_i *= .9
                 reward_i *= discount_factor
+
     else:
+        # if you intentionally set discount_factor to 1, which means no discount
+        # then the following code will be faster:
         # for each reward:
         for i in range(length):
             reward_i = rewards[i]
 
             # what we meant to do:
             # coolness[i] += reward
-            # coolness[i-1] += reward * .9
-            # coolness[i-2] += reward * .9 * .9
-            # coolness[i-3] += reward * .9 * .9 * .9
+            # coolness[i-1] += reward
+            # coolness[i-2] += reward
+            # coolness[i-3] += reward
 
             # what we actually did (to optimize for speed):
             coolness[0:i+1] += reward_i
@@ -98,10 +130,11 @@ def evaluate_coolness(rewards,discount_factor=.99):
 
 # so, to train the network, we have to produce:
 # example_x = what we observed before each step of action
-# example_y = coolness indicatior of each of the actions, given the rewards
+# example_y = coolness indicator of each of the actions, calculated from the rewards.
 
-# then ask the network to maximize coolness.
+# then we ask the network to maximize coolness.
 
+# here is the coolness indicator:
 def multiply_coolness_with_actions(actions,coolness):
     # you performed one episode, collected a list of actions and rewards.
     length = len(actions)
@@ -130,7 +163,7 @@ def multiply_coolness_with_actions(actions,coolness):
     [0.3, 0.3, 0.3]
     that means we will randomly choose an action out of 3.
 
-    now let's suppose the network chose the first action.
+    now let's suppose we chose the first action.
     we can describe that action as [1.0, 0.0, 0.0].
 
     after one episode, we found out that specific action was actually cool
@@ -171,9 +204,7 @@ def multiply_coolness_with_actions(actions,coolness):
     so, by adding a log() to the probability,
     we could produce negative values, with positive probabilities.
 
-    Now that's what I call POLICY GRADIENT methods.
-
-    a.k.a. Fuck some of the YouTube tutorials.
+    Now that's what they call POLICY GRADIENT methods.
 
     let's assume our actions are already one-hot representations:
     (which means choosing action 0 -> [1,0,0] and choosing action 1 -> [0,1,0])
@@ -185,7 +216,7 @@ def multiply_coolness_with_actions(actions,coolness):
     return action_coolness
 
 # run episode with some policy of some agent, and collect the rewards
-
+# well the usual gym stuff
 def do_episode_collect_trajectory(agent, env, max_steps, render=True, feed=True, realtime=False):
     # keep a record of:
     observations=[] # what we see,
@@ -237,12 +268,8 @@ class nnagent(object):
         input_shape = num_of_observations
         i = Input(shape=(input_shape,))
         h = Dense(10,activation='tanh')(i)
-        # h = Dense(2,activation='tanh')(i)
 
-        # h = Dense(4,activation='tanh')(h)
-        # h = Dense(4,activation='tanh')(h)
         # h = Dense(num_of_actions,activation='tanh')(h)
-
 
         h = Dense(num_of_actions)(h)
         out = Activation('softmax')(h)
@@ -265,19 +292,20 @@ class nnagent(object):
         print('model architechture:')
         model.summary()
 
-    # act base on observation
+    # act one step base on observation
     def act(self, observation):
         model = self.model
         observation = observation.reshape((1,len(observation)))
 
-        # assume observation is a vector
+        # observation is a vector
         probabilities = model.predict([observation])[0]
 
         csprob = np.cumsum(probabilities)
-        # turn [.3, .5, .2] into [.3, .8, 1.]
+        # 'cumsum' turns [0.3, 0.5, 0.1, 0.1] into [0.0, 0.3, 0.8, 0.9]
+        # so that we could draw from it using a random number from 0 - 1
 
-        # pick one action with probability of that action.
-        # return the index of that action (integer)
+        # draw one action, with probability of that action.
+        # then return the index of that action (an integer)
         action_index = (csprob > np.random.rand()).argmax()
 
         return action_index
@@ -286,13 +314,13 @@ class nnagent(object):
         # clear states
         pass
 
-    # after playing for one episode, we feed the agent with data.
+    # after playing for one(or whatever) episode, we could feed the agent with data.
     def feed_episodic_data(self,episodic_data):
         observations,actions,rewards = episodic_data
 
         actions = np.array(actions)
 
-        # IMPORTANT: convert actions to one-hot
+        # IMPORTANT: convert actions to their one-hot representations
         def one_hot(tensor,classes):
             heat = np.zeros(tensor.shape+(classes,))
             for i in range(classes):
@@ -302,14 +330,13 @@ class nnagent(object):
 
         # how cool is each action?
         coolness = evaluate_coolness(rewards,self.discount_factor)
-
         action_coolness = multiply_coolness_with_actions(onehot_actions,coolness)
 
         # add to agent's database
         self.observations = np.vstack((self.observations,observations))
         self.action_coolness = np.vstack((self.action_coolness,action_coolness))
 
-    # train agent with ALL collected data
+    # train agent with ALL collected data from its database
     def train(self,epochs=100):
         model = self.model
         observations,coolness = self.observations, self.action_coolness
@@ -325,7 +352,7 @@ class nnagent(object):
         self.observations = np.zeros((0,self.num_of_observations))
         self.action_coolness = np.zeros((0,self.num_of_actions))
 
-    def bad_kids_eaten_by_the_wolf(self): # discard the least cool actions from history.
+    def bad_kids_eaten_by_the_wolf(self): # discard the least cool actions from database.
         num_stay = 50000
         length = len(self.action_coolness)
         if length <= num_stay:
@@ -339,7 +366,7 @@ class nnagent(object):
         self.action_coolness = np.array([self.action_coolness[i] for i in stay_indices])
         self.observations = np.array([self.observations[i] for i in stay_indices])
 
-    def drop_previous(self):
+    def drop_previous(self): # optional: discard early samples. not very useful for most cases
         num_stay = 3000
         length = len(self.action_coolness)
         if length <= num_stay:
@@ -350,35 +377,38 @@ class nnagent(object):
         self.action_coolness = self.action_coolness[length - num_stay:length]
         self.observations = self.observations[length - num_stay:length]
 
-
-
 from gym import wrappers
 
 # give it a try
-# env = gym.make('Acrobot-v1')
-env = gym.make('CartPole-v1')
+env = gym.make('Acrobot-v1')
+# env = gym.make('CartPole-v1')
 # env = wrappers.Monitor(env,'./experiment-3',force=True)
 agent = nnagent(
 num_of_actions=env.action_space.n,
 num_of_observations=env.observation_space.shape[0],
-discount_factor=.999999
+discount_factor=.99
 )
 
+# main training loop
 def r(times=3):
-
     for k in range(times):
         print('training loop',k,'/',times)
         for i in range(1): # do 1 episode
             print('play episode:',i)
             episodic_data = do_episode_collect_trajectory(agent,env,max_steps=5000,render=True,feed=True)
+            # after play, the episodic data will be feeded to the agent AUTOMATICALLY, so no feeding here
+
             print('length of episode:',len(episodic_data[0]))
             print('total reward of episode:',np.sum(episodic_data[2]))
 
-        if len(agent.observations)> 200: # wait until data became diverse enough
+        if len(agent.observations)> 2000: # wait until collected data became diverse enough
+            # ask agent to train itself, with previously collected data
             agent.train(epochs=min(140,len(agent.observations)))
-            # agent.dump()
-        # agent.drop_previous()
-        agent.bad_kids_eaten_by_the_wolf() # kill bad kids
+
+        agent.bad_kids_eaten_by_the_wolf()
+        # ask agent to remove bad actions from its trajectory database
+        # if the data exceeds a certain size
+        # (to minimize training time)
 
 def check():
     episodic_data = do_episode_collect_trajectory(agent,env,max_steps=1000,render=True,feed=False,realtime=True)
