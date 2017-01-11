@@ -217,7 +217,7 @@ def multiply_coolness_with_actions(actions,coolness):
 
 # run episode with some policy of some agent, and collect the rewards
 # well the usual gym stuff
-def do_episode_collect_trajectory(agent, env, max_steps, render=True, feed=True, realtime=False):
+def do_episode_collect_trajectory(agent, env, max_steps, render=True, feed=True, realtime=False, use_best=False):
     # keep a record of:
     observations=[] # what we see,
     actions=[] # what we did,
@@ -228,7 +228,7 @@ def do_episode_collect_trajectory(agent, env, max_steps, render=True, feed=True,
 
     for t in range(max_steps):
         observations.append(observation)
-        action = agent.act(observations[-1])
+        action = agent.act(observations[-1],use_best=use_best)
         # acting based on last observation and last observation only.
 
         actions.append(action)
@@ -254,9 +254,10 @@ import time
 
 # our neural network agent.
 class nnagent(object):
-    def __init__(self, num_of_actions, num_of_observations, discount_factor):
-        # agent database: only those two are important
+    def __init__(self, num_of_actions, num_of_observations, discount_factor,  optimizer, epsilon=-1,):
+        # agent database
         self.observations = np.zeros((0,num_of_observations))
+        self.state_coolness = np.zeros((0,1))
         self.action_coolness = np.zeros((0,num_of_actions))
         self.actions = np.zeros((0,num_of_actions))
 
@@ -264,10 +265,12 @@ class nnagent(object):
         self.num_of_observations = num_of_observations
         self.discount_factor = discount_factor
 
+        self.epsilon = epsilon # epsilon-greedy per David Silver's Lecture.
+
         # our network
         input_shape = num_of_observations
         i = Input(shape=(input_shape,))
-        h = Dense(10,activation='tanh')(i)
+        h = Dense(20,activation='tanh')(i)
 
         # h = Dense(num_of_actions,activation='tanh')(h)
 
@@ -285,7 +288,7 @@ class nnagent(object):
             action_coolness = y_true
             return - K.mean(K.log(network_output+1e-10) * action_coolness)
 
-        model.compile(loss=policy_loss,optimizer=Adam())
+        model.compile(loss=policy_loss,optimizer=optimizer)
         self.model = model
         print('agent Initialized with',num_of_observations,'dim input and',num_of_actions,'dim output.')
         print('discount_factor',discount_factor)
@@ -293,20 +296,37 @@ class nnagent(object):
         model.summary()
 
     # act one step base on observation
-    def act(self, observation):
+    def act(self, observation, use_best=False):
         model = self.model
+        epsilon = self.epsilon # greedy factor
+
         observation = observation.reshape((1,len(observation)))
 
         # observation is a vector
         probabilities = model.predict([observation])[0]
 
-        csprob = np.cumsum(probabilities)
-        # 'cumsum' turns [0.3, 0.5, 0.1, 0.1] into [0.0, 0.3, 0.8, 0.9]
-        # so that we could draw from it using a random number from 0 - 1
+        # here are two ways to draw actions considering their probabilities
 
-        # draw one action, with probability of that action.
-        # then return the index of that action (an integer)
-        action_index = (csprob > np.random.rand()).argmax()
+        if self.epsilon < 0: # if epsilon is set to impossible values
+            csprob = np.cumsum(probabilities)
+            # 'cumsum' turns [0.3, 0.5, 0.1, 0.1] into [0.0, 0.3, 0.8, 0.9]
+            # so that we could draw from it using a random number from 0 - 1
+
+            # draw one action, with probability of that action.
+            # then return the index of that action (an integer)
+            action_index = (csprob > np.random.rand()).argmax()
+
+        if self.epsilon > 0:
+            # with probability epsilon we act greedy:
+            if self.epsilon > np.random.rand(1):
+                action_index = probabilities.argmax()
+            else:
+                # with probability 1-epsilon we act randomly:
+                action_index = np.random.choice(len(probabilities))
+
+        if use_best:
+            # always act greedly
+            action_index = probabilities.argmax()
 
         return action_index
 
@@ -332,19 +352,33 @@ class nnagent(object):
         coolness = evaluate_coolness(rewards,self.discount_factor)
         action_coolness = multiply_coolness_with_actions(onehot_actions,coolness)
 
+        # how cool is each state?
+        # state_coolness = evaluate_coolness(rewards,discount_factor=1.)
+
         # add to agent's database
         self.observations = np.vstack((self.observations,observations))
         self.action_coolness = np.vstack((self.action_coolness,action_coolness))
 
-    # train agent with ALL collected data from its database
+    # train agent with some of its collected data from its database
     def train(self,epochs=100):
         model = self.model
         observations,coolness = self.observations, self.action_coolness
+        length = len(observations)
 
-        model.fit(observations, coolness,
-                  batch_size=min(len(observations),5000),
-                  nb_epoch=epochs,
-                  shuffle=False)
+
+        for i in range(epochs):
+            # train 1 epoch on a randomly selected subset of the whole database.
+
+            subset_size = min(length,256)
+
+            indices = np.random.choice(length,subset_size,replace=False)
+            subset_observations = np.take(observations,indices,axis=0)
+            subset_coolness = np.take(coolness,indices,axis=0)
+
+            model.fit(subset_observations, subset_coolness,
+                      batch_size=len(subset_coolness),
+                      nb_epoch=1,
+                      shuffle=False)
 
     # (optionally) throw away all data
     def dump(self):
@@ -380,13 +414,15 @@ class nnagent(object):
 from gym import wrappers
 
 # give it a try
-env = gym.make('Acrobot-v1')
-# env = gym.make('CartPole-v1')
+# env = gym.make('Acrobot-v1')
+env = gym.make('CartPole-v1')
 # env = wrappers.Monitor(env,'./experiment-3',force=True)
 agent = nnagent(
 num_of_actions=env.action_space.n,
 num_of_observations=env.observation_space.shape[0],
-discount_factor=.99
+discount_factor=1.,
+epsilon=-1,
+optimizer = SGD(lr=0.003)
 )
 
 # main training loop
@@ -401,16 +437,16 @@ def r(times=3):
             print('length of episode:',len(episodic_data[0]))
             print('total reward of episode:',np.sum(episodic_data[2]))
 
-        if len(agent.observations)> 2000: # wait until collected data became diverse enough
+        if len(agent.observations)> 300: # wait until collected data became diverse enough
             # ask agent to train itself, with previously collected data
-            agent.train(epochs=min(140,len(agent.observations)))
+            agent.train(epochs=min(500,len(agent.observations)))
 
-        agent.bad_kids_eaten_by_the_wolf()
-        # ask agent to remove bad actions from its trajectory database
-        # if the data exceeds a certain size
-        # (to minimize training time)
+            # increase epsilon to make agent choose less and less random actions.
+            # if agent.epsilon>0:
+            #     agent.epsilon+=0.005
+            #     print('agent epsilon:', agent.epsilon)
 
 def check():
-    episodic_data = do_episode_collect_trajectory(agent,env,max_steps=1000,render=True,feed=False,realtime=True)
+    episodic_data = do_episode_collect_trajectory(agent,env,max_steps=1000,render=True,feed=False,realtime=True,use_best=True)
     print('length of episode:',len(episodic_data[0]))
     print('total reward of episode:',np.sum(episodic_data[2]))
