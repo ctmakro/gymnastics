@@ -277,7 +277,7 @@ class nnagent(object):
         showbar(np.hstack([qvalues,np.max(qvalues,keepdims=True)]),action_index) #visualization
 
         agent.epsilon -= 1./10000
-        agent.epsilon = max(0.07,agent.epsilon)
+        agent.epsilon = max(0.1,agent.epsilon)
 
 
         return action_index
