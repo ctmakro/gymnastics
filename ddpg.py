@@ -116,13 +116,18 @@ def resdense(features):
         hfeatures = max(4,int(features/4))
 
         ident = i
-        i = Dense(features,activation='tanh')(i)
+        i = Dense(features,activation='relu')(i)
 
         ident = Dense(hfeatures)(ident)
         ident = Dense(features)(ident)
 
         return merge([ident,i],mode='sum')
     return unit
+
+def softmax(x):
+    """Compute softmax values for each sets of scores in x."""
+    ex = np.exp(x)
+    return ex / np.sum(ex, axis=0)
 
 class nnagent(object):
     def __init__(self,
@@ -163,6 +168,11 @@ class nnagent(object):
             self.action_multiplier = .5 # map (-1,1) into (0,1)
 
             self.is_continuous = False
+
+            def clamper(actions):
+                return np.clip(actions,a_max=1.,a_min=0.)
+
+            self.clamper = clamper
 
         self.outputdims = num_of_actions
 
@@ -209,7 +219,7 @@ class nnagent(object):
         # dirty part ended -----------------------------------------------------
 
     # (gradually) replace target network weights with online network weights
-    def _replace_weights(self,tau=0.002):
+    def _replace_weights(self,tau=0.001):
         theta_a,theta_c = self.actor.get_weights(),self.critic.get_weights()
         theta_a_targ,theta_c_targ = self.actor_target.get_weights(),self.critic_target.get_weights()
 
@@ -251,11 +261,9 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         inp = Input(shape=(inputdims,))
         i = inp
-        i = resdense(32)(i)
-        i = resdense(32)(i)
-        i = resdense(64)(i)
-        i = resdense(64)(i)
-        i = resdense(64)(i)
+        i = resdense(128)(i)
+        i = resdense(128)(i)
+        i = resdense(128)(i)
         i = resdense(outputdims)(i)
         # map into (0,1)
         i = Activation('tanh')(i)
@@ -271,14 +279,14 @@ class nnagent(object):
     def create_critic_network(self,inputdims,actiondims):
         inp = Input(shape=(inputdims,))
         act = Input(shape=(actiondims,))
-        i = merge([inp,act],mode='concat')
+        # i = merge([inp,act],mode='concat')
+        i = inp
 
-        i = resdense(64)(i)
-        i = resdense(64)(i)
-        i = resdense(64)(i)
-        i = resdense(32)(i)
-        i = resdense(32)(i)
-        i = resdense(1)(i)
+        i = resdense(128)(i)
+        i = merge([i,act],mode='concat')
+        i = resdense(128)(i)
+        i = resdense(128)(i)
+        i = Dense(1)(i)
         out = i
         model = Model(input=[inp,act],output=out)
         model.compile(loss='mse',optimizer=self.optimizer)
@@ -321,6 +329,7 @@ class nnagent(object):
         critic,frozen_critic = self.critic,self.frozen_critic
         actor = self.actor
         batch_size = 64
+        epochs = 1
 
         if memory.size() > batch_size:
             #if enough samples in memory
@@ -372,7 +381,7 @@ class nnagent(object):
             # train the critic to predict the q1_target, given s1 and a1.
             critic.fit([s1,a1],q1_target,
             batch_size=batch_size,
-            nb_epoch=1,
+            nb_epoch=epochs,
             verbose=verbose,
             shuffle=False
             )
@@ -382,7 +391,7 @@ class nnagent(object):
 
             # with a better critic, we can now improve our actor!
 
-            if False: # the following part is for explaination purposes
+            if False: # the following part is optimized away. left here for explaination purposes
 
                 # a1_pred = actor(s1) : what will you do in s1, Mr. actor?
                 a1_maybe = actor.predict(s1)
@@ -410,13 +419,13 @@ class nnagent(object):
 
                 actor_trainer.compile(optimizer=self.optimizer,loss=neg_q1)
 
-            else: # the actor_trainer is already initialized in __init__
+            else: # the actor_trainer is already initialized in create_actor_trainer()
                 actor_trainer = self.actor_trainer
 
                 actor_trainer.fit(s1,
                 np.zeros((batch_size,1)), # useless target label
                 batch_size=batch_size,
-                nb_epoch=1,
+                nb_epoch=epochs,
                 verbose=verbose,
                 shuffle=False
                 )
@@ -456,21 +465,23 @@ class nnagent(object):
         while True and steps <= max_steps:
             steps +=1
 
-            # add noise to our actions, since our policy by nature is deterministic
-            exploration_noise = np.random.normal(loc=0.,scale=noise_level,size=(self.outputdims,))
-
             action = self.act(lastque) # a1
-            action += exploration_noise
-            action = self.clamper(action)
 
             if self.is_continuous:
-                pass
+                # add noise to our actions, since our policy by nature is deterministic
+                exploration_noise = np.random.normal(loc=0.,scale=noise_level,size=(self.outputdims,))
+                action += exploration_noise
+                action = self.clamper(action)
+                action_out = action
             else:
                 # discretize our actions
-                action = action.argmax()
+                probabilities = softmax(action)
+                csprob = np.cumsum(probabilities)
+                action_index = (csprob > np.random.rand()).argmax()
+                action_out = action_index
 
             # o2, r1,
-            observation, reward, done, _info = env.step(action)
+            observation, reward, done, _info = env.step(action_out)
 
             # d1
             isdone = 1 if done else 0
@@ -518,19 +529,21 @@ class playground(object):
         gym.upload(self.monpath, api_key='sk_ge0PoVXsS6C5ojZ9amTkSA')
 
 # p = playground('LunarLanderContinuous-v2')
-p = playground('Pendulum-v0')
+# p = playground('Pendulum-v0')
+p = playground('MountainCar-v0')
+
 e = p.env
 
 agent = nnagent(
 e.observation_space,
 e.action_space,
-discount_factor=.995,
+discount_factor=.99,
 optimizer=RMSprop()
 )
 
 def r(ep):
     e = p.env
     for i in range(ep):
-        noise_level = max(3e-2,(50.-i)/50.)
+        noise_level = max(3e-2,(50.-i)/20.)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,max_steps=1000,noise_level=noise_level)
