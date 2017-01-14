@@ -36,7 +36,7 @@ To understand this piece of code (even with comments), you should be familiar wi
 '''
 
 # evaluate the coolness of a list of actions, based on the rewards.
-def evaluate_coolness(rewards,discount_factor=.99):
+def evaluate_coolness(rewards,discount_factor=.99,coolness_baseline=0.):
     # you performed one episode, collected a list of actions and rewards.
     length = len(rewards)
 
@@ -52,6 +52,10 @@ def evaluate_coolness(rewards,discount_factor=.99):
     """
 
     coolness = np.zeros((length,1))
+
+    # you may set a baseline for coolness. default is zero.
+    # larger than baseline means acceptable, smaller than baseline means unacceptable.
+    coolness -= coolness_baseline
 
     """
     intuitively,
@@ -108,10 +112,10 @@ def evaluate_coolness(rewards,discount_factor=.99):
             reward_i = rewards[i]
 
             # what we meant to do:
-            # coolness[i] += reward
-            # coolness[i-1] += reward
-            # coolness[i-2] += reward
-            # coolness[i-3] += reward
+            # coolness[i] += reward[i]
+            # coolness[i-1] += reward[i]
+            # coolness[i-2] += reward[i]
+            # coolness[i-3] += reward[i]
 
             # what we actually did (to optimize for speed):
             coolness[0:i+1] += reward_i
@@ -254,7 +258,7 @@ import time
 
 # our neural network agent.
 class nnagent(object):
-    def __init__(self, num_of_actions, num_of_observations, discount_factor):
+    def __init__(self, num_of_actions, num_of_observations, discount_factor, coolness_baseline=0.):
         # agent database: only those two are important
         self.observations = np.zeros((0,num_of_observations))
         self.action_coolness = np.zeros((0,num_of_actions))
@@ -264,10 +268,15 @@ class nnagent(object):
         self.num_of_observations = num_of_observations
         self.discount_factor = discount_factor
 
+        self.coolness_baseline = coolness_baseline
+
         # our network
         input_shape = num_of_observations
         i = Input(shape=(input_shape,))
-        h = Dense(10,activation='tanh')(i)
+        h = i
+        h = Dense(20,activation='tanh',init='lecun_uniform')(h)
+        # h = Dense(8,activation='tanh',init='lecun_uniform')(h)
+        h = Dense(1,activation='tanh',init='lecun_uniform')(h)
 
         # h = Dense(num_of_actions,activation='tanh')(h)
 
@@ -329,7 +338,7 @@ class nnagent(object):
         onehot_actions = one_hot(actions,self.num_of_actions)
 
         # how cool is each action?
-        coolness = evaluate_coolness(rewards,self.discount_factor)
+        coolness = evaluate_coolness(rewards,self.discount_factor,self.coolness_baseline)
         action_coolness = multiply_coolness_with_actions(onehot_actions,coolness)
 
         # add to agent's database
@@ -345,6 +354,8 @@ class nnagent(object):
                   batch_size=min(len(observations),5000),
                   nb_epoch=epochs,
                   shuffle=False)
+
+    # following section are all helper methods
 
     # (optionally) throw away all data
     def dump(self):
@@ -377,6 +388,8 @@ class nnagent(object):
         self.action_coolness = self.action_coolness[length - num_stay:length]
         self.observations = self.observations[length - num_stay:length]
 
+# main program
+
 from gym import wrappers
 
 # give it a try
@@ -386,7 +399,8 @@ env = gym.make('Acrobot-v1')
 agent = nnagent(
 num_of_actions=env.action_space.n,
 num_of_observations=env.observation_space.shape[0],
-discount_factor=.99
+discount_factor=.99,
+coolness_baseline=-1.
 )
 
 # main training loop
@@ -395,13 +409,13 @@ def r(times=3):
         print('training loop',k,'/',times)
         for i in range(1): # do 1 episode
             print('play episode:',i)
-            episodic_data = do_episode_collect_trajectory(agent,env,max_steps=5000,render=True,feed=True)
+            episodic_data = do_episode_collect_trajectory(agent,env,max_steps=600,render=True,feed=True)
             # after play, the episodic data will be feeded to the agent AUTOMATICALLY, so no feeding here
 
             print('length of episode:',len(episodic_data[0]))
             print('total reward of episode:',np.sum(episodic_data[2]))
 
-        if len(agent.observations)> 2000: # wait until collected data became diverse enough
+        if len(agent.observations)> 10000: # wait until collected data became diverse enough
             # ask agent to train itself, with previously collected data
             agent.train(epochs=min(140,len(agent.observations)))
 
