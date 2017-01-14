@@ -6,6 +6,9 @@ from __future__ import print_function
 # implemented in plain Keras, by Qin Yongliang
 # 2017 01 13
 
+# heavily optimized for speed, lots of numpy flowed into tensorflow
+# 2017 01 14
+
 '''
 summary
 
@@ -182,6 +185,10 @@ class nnagent(object):
 
         self.replace_weights(tau=1.)
 
+        self.create_q1_target_model()
+        self.create_actor_trainer()
+
+    def create_actor_trainer(self):
         # now the dirty part: the actor trainer --------------------------------
 
         # explaination of this part is written in the train() method
@@ -202,7 +209,7 @@ class nnagent(object):
         # dirty part ended -----------------------------------------------------
 
     # (gradually) replace target network weights with online network weights
-    def replace_weights(self,tau=0.002):
+    def _replace_weights(self,tau=0.002):
         theta_a,theta_c = self.actor.get_weights(),self.critic.get_weights()
         theta_a_targ,theta_c_targ = self.actor_target.get_weights(),self.critic_target.get_weights()
 
@@ -212,6 +219,33 @@ class nnagent(object):
 
         self.actor_target.set_weights(theta_a_targ)
         self.critic_target.set_weights(theta_c_targ)
+
+    # the method above uses numpy, how can we flow it in tensorflow?
+    def replace_weights(self,tau=0.001):
+        if not hasattr(self,'wflow'):
+            self.wflow = self.weights_flow()
+
+        flow = self.wflow
+        tau = np.array([tau],dtype='float32')
+
+        flow([tau,0])
+
+    def weights_flow(self):
+        # define the weight replacing op
+        theta_a,theta_c = self.actor.weights,self.critic.weights
+        theta_a_targ,theta_c_targ = self.actor_target.weights,self.critic_target.weights
+
+        tau_place = K.placeholder(shape=(1,))
+
+        ops = []
+        for i,w in enumerate(theta_a_targ):
+            ops += [theta_a_targ[i].assign(theta_a[i]*tau_place + theta_a_targ[i]*(1-tau_place))]
+
+        for i,w in enumerate(theta_c_targ):
+            ops += [theta_c_targ[i].assign(theta_c[i]*tau_place + theta_c_targ[i]*(1-tau_place))]
+
+        flow = K.function([tau_place],ops)
+        return flow
 
     # a = actor(s) : predict actions given state
     def create_actor_network(self,inputdims,outputdims):
@@ -259,6 +293,29 @@ class nnagent(object):
 
         return model,frozen_model
 
+    def create_q1_target_model(self):
+        # this part is for performance optimization
+        # for explaination of this part, please check train()
+
+        s2i = Input(shape=(self.inputdims,))
+        a2i = self.actor_target(s2i)
+        q2i = self.critic_target([s2i,a2i])
+
+        r1i = Input(shape=(1,))
+        isdonei = Input(shape=(1,))
+
+        def calc_q1_target(x):
+            [r1i,isdonei,q2i] = x
+            return r1i + (1-isdonei) * self.discount_factor * q2i
+
+        def calc_output_shape(input_shapes):
+            return input_shapes[0]
+
+        q1_target = merge([r1i,isdonei,q2i],mode=calc_q1_target,output_shape=calc_output_shape)
+        q1_target_model = Model(input=[s2i,r1i,isdonei],output=q1_target)
+
+        self.q1_target_model = q1_target_model
+
     def train(self,verbose=1):
         memory = self.rpm
         critic,frozen_critic = self.critic,self.frozen_critic
@@ -272,21 +329,45 @@ class nnagent(object):
             [s1,a1,r1,isdone,s2] = memory.sample_batch(batch_size)
             # print(s1.shape,a1.shape,r1.shape,isdone.shape,s2.shape)
 
-            # a2_targ = actor_targ(s2) : what will you do in s2, Mr. old actor?
-            a2 = self.actor_target.predict(s2)
+            if False: # the following is optimized away but kept for clarity.
 
-            # q2_targ = critic_targ(s2,a2) : how good is action a2, Mr. old critic?
-            q2 = self.critic_target.predict([s2,a2])
+                # a2_targ = actor_targ(s2) : what will you do in s2, Mr. old actor?
+                a2 = self.actor_target.predict(s2)
 
-            # if a2 is q2-good, then what should q1 be?
-            # Use Bellman Equation! (recursive definition of q-values)
-            # if not last step of episode:
-            #   q1 = (r1 + gamma * q2)
-            # else:
-            #   q1 = r1
+                # q2_targ = critic_targ(s2,a2) : how good is action a2, Mr. old critic?
+                q2 = self.critic_target.predict([s2,a2])
 
-            q1_target = r1 + (1-isdone) * self.discount_factor * q2
-            # print(q1_target.shape)
+                # what if we combine the 2 above to improve performance?
+                s2i = Input(shape=(self.inputdims,))
+                a2i = self.actor_target(s2i)
+                q2i = self.critic_target([s2i,a2i])
+
+                # if a2 is q2-good, then what should q1 be?
+                # Use Bellman Equation! (recursive definition of q-values)
+                # if not last step of episode:
+                #   q1 = (r1 + gamma * q2)
+                # else:
+                #   q1 = r1
+
+                q1_target = r1 + (1-isdone) * self.discount_factor * q2
+
+                # but, what if we combine all above to improve performance?
+                r1i = Input(shape=(1,))
+                isdonei = Input(shape=(1,))
+
+                def calc_q1_target(x):
+                    [r1i,isdonei,q2i] = x
+                    return r1i + (1-isdonei) * self.discount_factor * q2i
+
+                def calc_output_shape(input_shapes):
+                    return input_shapes[0]
+
+                q1_target = merge([r1i,isdonei,q2i],mode=calc_q1_target,output_shape=calc_output_shape)
+                q1_target_model = Model(input=[s2i,r1i,isdonei],output=q1_target)
+
+            else:
+                # q1_target_model is already implemented in create_q1_target_model()
+                q1_target = self.q1_target_model.predict([s2,r1,isdone])
 
             # train the critic to predict the q1_target, given s1 and a1.
             critic.fit([s1,a1],q1_target,
@@ -382,6 +463,12 @@ class nnagent(object):
             action += exploration_noise
             action = self.clamper(action)
 
+            if self.is_continuous:
+                pass
+            else:
+                # discretize our actions
+                action = action.argmax()
+
             # o2, r1,
             observation, reward, done, _info = env.step(action)
 
@@ -430,7 +517,8 @@ class playground(object):
         self.env.close()
         gym.upload(self.monpath, api_key='sk_ge0PoVXsS6C5ojZ9amTkSA')
 
-p = playground('LunarLanderContinuous-v2')
+# p = playground('LunarLanderContinuous-v2')
+p = playground('Pendulum-v0')
 e = p.env
 
 agent = nnagent(
