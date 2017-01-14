@@ -128,7 +128,7 @@ class nnagent(object):
     discount_factor, # gamma
     optimizer
     ):
-        self.rpm = rpm(100000) # 100k history
+        self.rpm = rpm(1000000) # 1M history
         self.observation_stack_factor = 2
 
         self.inputdims = observation_space.shape[0] * self.observation_stack_factor
@@ -148,6 +148,11 @@ class nnagent(object):
             # mult = 2.5. then [-1,1] multiplies 2.5 + bias 4.5 -> [2,7]
 
             self.is_continuous = True
+
+            def clamper(actions):
+                return np.clip(actions,a_max=action_space.high,a_min=action_space.low)
+
+            self.clamper = clamper
         else:
             num_of_actions = action_space.n
 
@@ -197,7 +202,7 @@ class nnagent(object):
         # dirty part ended -----------------------------------------------------
 
     # (gradually) replace target network weights with online network weights
-    def replace_weights(self,tau=0.003):
+    def replace_weights(self,tau=0.002):
         theta_a,theta_c = self.actor.get_weights(),self.critic.get_weights()
         theta_a_targ,theta_c_targ = self.actor_target.get_weights(),self.critic_target.get_weights()
 
@@ -214,6 +219,8 @@ class nnagent(object):
         i = inp
         i = resdense(32)(i)
         i = resdense(32)(i)
+        i = resdense(64)(i)
+        i = resdense(64)(i)
         i = resdense(64)(i)
         i = resdense(outputdims)(i)
         # map into (0,1)
@@ -232,6 +239,8 @@ class nnagent(object):
         act = Input(shape=(actiondims,))
         i = merge([inp,act],mode='concat')
 
+        i = resdense(64)(i)
+        i = resdense(64)(i)
         i = resdense(64)(i)
         i = resdense(32)(i)
         i = resdense(32)(i)
@@ -254,7 +263,7 @@ class nnagent(object):
         memory = self.rpm
         critic,frozen_critic = self.critic,self.frozen_critic
         actor = self.actor
-        batch_size = 128
+        batch_size = 64
 
         if memory.size() > batch_size:
             #if enough samples in memory
@@ -371,6 +380,7 @@ class nnagent(object):
 
             action = self.act(lastque) # a1
             action += exploration_noise
+            action = self.clamper(action)
 
             # o2, r1,
             observation, reward, done, _info = env.step(action)
@@ -420,19 +430,19 @@ class playground(object):
         self.env.close()
         gym.upload(self.monpath, api_key='sk_ge0PoVXsS6C5ojZ9amTkSA')
 
-p = playground('Pendulum-v0')
+p = playground('LunarLanderContinuous-v2')
 e = p.env
 
 agent = nnagent(
 e.observation_space,
 e.action_space,
-discount_factor=.99,
+discount_factor=.995,
 optimizer=RMSprop()
 )
 
 def r(ep):
     e = p.env
     for i in range(ep):
-        noise_level = max(1e-9,(50.-i)/50.)
+        noise_level = max(3e-2,(50.-i)/50.)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,max_steps=1000,noise_level=noise_level)
