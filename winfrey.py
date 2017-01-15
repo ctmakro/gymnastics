@@ -5,6 +5,44 @@ imgw = 200
 imgh = 300
 
 lastshow = time.time()
+lastq = 0
+def showwave(q):
+    global imgw
+    global lastq
+
+    while q < - imgh/2:
+        q += imgh
+
+    while q > imgh/2+10:
+        q -= imgh
+
+    if hasattr(showwave,'im'):
+        showwave.im[:,0:imgw-1] = showwave.im[:,1:imgw]
+        showwave.im[:,imgw-1:imgw] = 0.
+    else:
+        showwave.im = np.zeros((imgh,imgw,3),dtype='float32')
+
+    im = showwave.im
+    dq = int(-q+imgh/2)
+    dlq = int(-lastq+imgh/2)
+
+    if dq+1>dlq:
+        dq,dlq = dlq,dq
+
+    if dq == dlq : dlq+=1
+
+    im[dq:dlq,imgw-1] = (1.3/(dlq-dq))**.4
+
+    im2=im.copy()
+    im2[dq,:]+=np.array([.3,.5,.7],dtype='float32')
+
+    lastq = q
+
+    global lastshow
+    if time.time()-lastshow>0.2:
+        lastshow=time.time()
+        cv2.imshow('q(s,a)',im2)
+        cv2.waitKey(1)
 
 def showbar(actions,idx):
     l = len(actions)
@@ -45,10 +83,12 @@ def showbar(actions,idx):
     im = np.clip(im,a_max=1.0,a_min=0.0)
 
     global lastshow
-    if time.time()-lastshow>0.1:
+    if time.time()-lastshow>0.2:
         lastshow=time.time()
         cv2.imshow('stat',im)
         cv2.waitKey(1)
 
 def test():
-    showbar([0,10,20,-10,-20])
+    # showbar([0,10,20,-10,-20])
+    showwave(10)
+    showwave(30)

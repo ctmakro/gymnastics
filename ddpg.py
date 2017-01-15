@@ -64,6 +64,7 @@ from math import *
 import random
 import keras.backend as K
 import time
+from winfrey import showwave
 
 from collections import deque
 
@@ -116,7 +117,7 @@ def resdense(features):
         hfeatures = max(4,int(features/4))
 
         ident = i
-        i = Dense(features,activation='relu')(i)
+        i = Dense(features,activation='tanh')(i)
 
         ident = Dense(hfeatures)(ident)
         ident = Dense(features)(ident)
@@ -265,14 +266,18 @@ class nnagent(object):
         i = resdense(128)(i)
         i = resdense(128)(i)
         i = resdense(outputdims)(i)
-        # map into (0,1)
-        i = Activation('tanh')(i)
-        # map into action_space
-        i = Lambda(lambda x:x * self.action_multiplier + self.action_bias)(i)
+
+        if self.is_continuous:
+            # map into (-1,1)
+            i = Activation('tanh')(i)
+            # map into action_space
+            i = Lambda(lambda x:x * self.action_multiplier *1.05 + self.action_bias)(i)
+        else:
+            # map into (0,1)
+            i = Activation('softmax')(i)
 
         out = i
         model = Model(input=inp,output=out)
-        model.compile(loss='mse',optimizer=self.optimizer)
         return model
 
     # q = critic(s,a) : predict q given state and action
@@ -442,7 +447,7 @@ class nnagent(object):
 
     # gymnastics
     def play(self,env,max_steps=-1,realtime=False,render=True,noise_level=0.): # play 1 episode
-        max_steps = max_steps if max_steps > 0 else 5000
+        max_steps = max_steps if max_steps > 0 else 50000
         steps = 0
         total_reward = 0
 
@@ -470,12 +475,13 @@ class nnagent(object):
             if self.is_continuous:
                 # add noise to our actions, since our policy by nature is deterministic
                 exploration_noise = np.random.normal(loc=0.,scale=noise_level,size=(self.outputdims,))
+                exploration_noise *= self.action_multiplier
                 action += exploration_noise
                 action = self.clamper(action)
                 action_out = action
             else:
                 # discretize our actions
-                probabilities = softmax(action)
+                probabilities = action
                 csprob = np.cumsum(probabilities)
                 action_index = (csprob > np.random.rand()).argmax()
                 action_out = action_index
@@ -507,10 +513,19 @@ class nnagent(object):
 
     # one step of action, given observation
     def act(self,observation):
-        actor = self.actor
+        actor,critic = self.actor,self.critic
         obs = np.reshape(observation,(1,len(observation)))
-        actions = actor.predict([obs])[0]
-        return actions
+        actions = actor.predict(obs)
+
+        q = critic.predict([obs,actions])[0]
+
+        self.logq(q)
+
+        return actions[0]
+
+    def logq(self,q):
+        showwave(q)
+
 
 class playground(object):
     def __init__(self,envname):
@@ -530,7 +545,8 @@ class playground(object):
 
 # p = playground('LunarLanderContinuous-v2')
 # p = playground('Pendulum-v0')
-p = playground('MountainCar-v0')
+# p = playground('MountainCar-v0')BipedalWalker-v2
+p = playground('BipedalWalker-v2')
 
 e = p.env
 
@@ -544,6 +560,6 @@ optimizer=RMSprop()
 def r(ep):
     e = p.env
     for i in range(ep):
-        noise_level = max(3e-2,(50.-i)/20.)
+        noise_level = max(5e-2,(300.-i)/50.)
         print('ep',i,'/',ep,'noise_level',noise_level)
-        agent.play(e,max_steps=1000,noise_level=noise_level)
+        agent.play(e,max_steps=-1,noise_level=noise_level)
