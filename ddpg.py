@@ -112,11 +112,11 @@ class rpm(object):
         return res
 
 def bn(i):
-    # return i
+    return i
     return BatchNormalization(mode=1)(i)
 
 def relu(i):
-    return Activation('relu')(i)
+    return Activation('elu')(i)
 
 # residual dense unit
 def resdense(idim,odim):
@@ -167,7 +167,7 @@ def one_fsq_noise(size):
     one_fsq_buffer += g
 
     # high pass, i guess
-    one_fsq_buffer *= .9
+    one_fsq_buffer *= .98
 
     return one_fsq_buffer
 
@@ -562,7 +562,8 @@ class nnagent(object):
 
         q = critic.predict([obs,actions])[0]
 
-        disp_actions = actions[0]*5 + np.arange(self.outputdims) * 12.0 + 10
+        disp_actions = (actions[0]-self.action_bias) / self.action_multiplier
+        disp_actions = disp_actions * 5 + np.arange(self.outputdims) * 12.0 + 20
         self.loggraph(np.hstack([disp_actions,q]))
 
         return actions[0]
@@ -614,7 +615,7 @@ optimizer=RMSprop()
 
 def r(ep):
     e = p.env
-    noise_level = .9
+    noise_level = 2.
     for i in range(ep):
         noise_level *= .95
         noise_level = max(1e-3,noise_level)
