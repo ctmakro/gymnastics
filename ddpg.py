@@ -111,18 +111,42 @@ class rpm(object):
             res.append(k)
         return res
 
+def bn(i):
+    # return i
+    return BatchNormalization(mode=1)(i)
+
+def relu(i):
+    return Activation('relu')(i)
+
 # residual dense unit
-def resdense(features):
+def resdense(idim,odim):
     def unit(i):
-        hfeatures = max(4,int(features/4))
+        mdim = max(4,int(idim/4),int(odim/4))
 
-        ident = i
-        i = Dense(features,activation='relu')(i)
+        if idim==odim:
+            ident = i
+            i = bn(i)
+            i = relu(i)
+            i = Dense(mdim)(i)
 
-        ident = Dense(hfeatures)(ident)
-        ident = Dense(features)(ident)
+            i = bn(i)
+            i = relu(i)
+            i = Dense(odim)(i)
 
-        return merge([ident,i],mode='sum')
+        else:
+            i = bn(i)
+            i = relu(i)
+            ident = i
+            i = Dense(mdim)(i)
+
+            i = bn(i)
+            i = relu(i)
+            i = Dense(odim)(i)
+
+            ident = Dense(odim)(ident)
+
+        out = merge([ident,i],mode='sum')
+        return out
     return unit
 
 def softmax(x):
@@ -151,11 +175,12 @@ class nnagent(object):
     def __init__(self,
     observation_space,
     action_space,
-    discount_factor, # gamma
-    optimizer
+    stack_factor=1,
+    discount_factor=.99, # gamma
+    optimizer=RMSprop()
     ):
         self.rpm = rpm(1000000) # 1M history
-        self.observation_stack_factor = 3
+        self.observation_stack_factor = stack_factor
 
         self.inputdims = observation_space.shape[0] * self.observation_stack_factor
         # assume observation_space is continuous
@@ -277,10 +302,11 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         inp = Input(shape=(inputdims,))
         i = inp
-        i = resdense(128)(i)
-        i = resdense(128)(i)
-        i = resdense(64)(i)
-        i = resdense(64)(i)
+        i = Dense(128)(i)
+        i = resdense(128,128)(i)
+        i = resdense(128,128)(i)
+        i = relu(bn(i))
+
         i = Dense(outputdims)(i)
 
         if self.is_continuous:
@@ -300,13 +326,13 @@ class nnagent(object):
     def create_critic_network(self,inputdims,actiondims):
         inp = Input(shape=(inputdims,))
         act = Input(shape=(actiondims,))
-        # i = merge([inp,act],mode='concat')
-        i = inp
-        i = merge([i,act],mode='concat')
-        i = resdense(128)(i)
-        i = resdense(128)(i)
-        i = resdense(64)(i)
-        i = resdense(64)(i)
+        i = merge([inp,act],mode='concat')
+
+        i = Dense(128)(i)
+        i = resdense(128,128)(i)
+        i = resdense(128,128)(i)
+        i = relu(bn(i))
+
         i = Dense(1)(i)
         out = i
         model = Model(input=[inp,act],output=out)
@@ -352,7 +378,7 @@ class nnagent(object):
         batch_size = 64
         epochs = 1
 
-        if memory.size() > batch_size:
+        if memory.size() > batch_size*2:
             #if enough samples in memory
 
             # sample randomly a minibatch from memory
@@ -536,7 +562,8 @@ class nnagent(object):
 
         q = critic.predict([obs,actions])[0]
 
-        self.loggraph(np.hstack([actions[0]*10+50,q]))
+        disp_actions = actions[0]*5 + np.arange(self.outputdims) * 12.0 + 10
+        self.loggraph(np.hstack([disp_actions,q]))
 
         return actions[0]
 
@@ -544,7 +571,7 @@ class nnagent(object):
         if not hasattr(self,'wavegraph'):
             def rn():
                 r = np.random.uniform()
-                return 0.2+r*0.2
+                return 0.2+r*0.4
             colors = []
             for i in range(len(waves)-1):
                 color = [rn(),rn(),rn()]
@@ -581,7 +608,7 @@ e = p.env
 agent = nnagent(
 e.observation_space,
 e.action_space,
-discount_factor=.99,
+discount_factor=.996,
 optimizer=RMSprop()
 )
 
