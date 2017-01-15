@@ -35,7 +35,7 @@ class wavegraph(object):
             if dq[i]+1>dlq[i]: dq[i],dlq[i] = dlq[i],dq[i]
             if dq[i]==dlq[i]: dlq[i]+=1
 
-            im[dq[i]:dlq[i],imgw-1] = (1.5/(dlq[i]-dq[i]))**0.5 * self.colors[i]
+            im[dq[i]:dlq[i],imgw-1] = (1.5/(dlq[i]-dq[i]))**0.4 * self.colors[i]
 
         self.lastq = q
 

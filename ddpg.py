@@ -117,7 +117,7 @@ def resdense(features):
         hfeatures = max(4,int(features/4))
 
         ident = i
-        i = Dense(features,activation='tanh')(i)
+        i = Dense(features,activation='relu')(i)
 
         ident = Dense(hfeatures)(ident)
         ident = Dense(features)(ident)
@@ -130,6 +130,7 @@ def softmax(x):
     ex = np.exp(x)
     return ex / np.sum(ex, axis=0)
 
+# 1/f^2 noise: http://hal.in2p3.fr/in2p3-00024797/document
 one_fsq_buffer = np.array([0.])
 def one_fsq_noise(size):
     global one_fsq_buffer
@@ -154,7 +155,7 @@ class nnagent(object):
     optimizer
     ):
         self.rpm = rpm(1000000) # 1M history
-        self.observation_stack_factor = 1
+        self.observation_stack_factor = 3
 
         self.inputdims = observation_space.shape[0] * self.observation_stack_factor
         # assume observation_space is continuous
@@ -276,8 +277,9 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         inp = Input(shape=(inputdims,))
         i = inp
-        i = resdense(256)(i)
         i = resdense(128)(i)
+        i = resdense(128)(i)
+        i = resdense(64)(i)
         i = resdense(64)(i)
         i = Dense(outputdims)(i)
 
@@ -301,8 +303,9 @@ class nnagent(object):
         # i = merge([inp,act],mode='concat')
         i = inp
         i = merge([i,act],mode='concat')
-        i = resdense(256)(i)
         i = resdense(128)(i)
+        i = resdense(128)(i)
+        i = resdense(64)(i)
         i = resdense(64)(i)
         i = Dense(1)(i)
         out = i
@@ -584,9 +587,9 @@ optimizer=RMSprop()
 
 def r(ep):
     e = p.env
-    noise_level = .5
+    noise_level = .9
     for i in range(ep):
-        noise_level *= .9
+        noise_level *= .95
         noise_level = max(1e-3,noise_level)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,max_steps=-1,noise_level=noise_level)
