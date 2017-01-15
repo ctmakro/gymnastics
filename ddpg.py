@@ -536,7 +536,7 @@ class nnagent(object):
 
         q = critic.predict([obs,actions])[0]
 
-        self.loggraph(np.vstack([actions[0]*10+50,q]))
+        self.loggraph(np.hstack([actions[0]*10+50,q]))
 
         return actions[0]
 
@@ -572,9 +572,9 @@ class playground(object):
         gym.upload(self.monpath, api_key='sk_ge0PoVXsS6C5ojZ9amTkSA')
 
 # p = playground('LunarLanderContinuous-v2')
-p = playground('Pendulum-v0')
+# p = playground('Pendulum-v0')
 # p = playground('MountainCar-v0')BipedalWalker-v2
-# p = playground('BipedalWalker-v2')
+p = playground('BipedalWalker-v2')
 
 e = p.env
 
