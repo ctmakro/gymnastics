@@ -64,7 +64,7 @@ from math import *
 import random
 import keras.backend as K
 import time
-from winfrey import showwave
+from winfrey import wavegraph
 
 from collections import deque
 
@@ -130,6 +130,22 @@ def softmax(x):
     ex = np.exp(x)
     return ex / np.sum(ex, axis=0)
 
+one_fsq_buffer = np.array([0.])
+def one_fsq_noise(size):
+    global one_fsq_buffer
+    # draw one gaussian
+    g = np.random.normal(loc=0.,scale=1.,size=size)
+
+    if one_fsq_buffer.shape != size:
+        one_fsq_buffer = np.zeros(size,dtype='float32')
+
+    one_fsq_buffer += g
+
+    # high pass, i guess
+    one_fsq_buffer *= .9
+
+    return one_fsq_buffer
+
 class nnagent(object):
     def __init__(self,
     observation_space,
@@ -138,25 +154,25 @@ class nnagent(object):
     optimizer
     ):
         self.rpm = rpm(1000000) # 1M history
-        self.observation_stack_factor = 2
+        self.observation_stack_factor = 1
 
         self.inputdims = observation_space.shape[0] * self.observation_stack_factor
         # assume observation_space is continuous
 
-        if isinstance(action_space,Box): # if action space is continuous
+        self.is_continuous = True if isinstance(action_space,Box) else False
+
+        if self.is_continuous: # if action space is continuous
 
             low = action_space.low
             high = action_space.high
 
             num_of_actions = action_space.shape[0]
 
-            self.action_bias = (high+low)/2.
+            self.action_bias = high/2. + low/2.
             self.action_multiplier = high - self.action_bias
 
             # say high,low -> [2,7], then bias -> 4.5
             # mult = 2.5. then [-1,1] multiplies 2.5 + bias 4.5 -> [2,7]
-
-            self.is_continuous = True
 
             def clamper(actions):
                 return np.clip(actions,a_max=action_space.high,a_min=action_space.low)
@@ -167,8 +183,6 @@ class nnagent(object):
 
             self.action_bias = .5
             self.action_multiplier = .5 # map (-1,1) into (0,1)
-
-            self.is_continuous = False
 
             def clamper(actions):
                 return np.clip(actions,a_max=1.,a_min=0.)
@@ -262,16 +276,16 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         inp = Input(shape=(inputdims,))
         i = inp
+        i = resdense(256)(i)
         i = resdense(128)(i)
-        i = resdense(128)(i)
-        i = resdense(128)(i)
-        i = resdense(outputdims)(i)
+        i = resdense(64)(i)
+        i = Dense(outputdims)(i)
 
         if self.is_continuous:
             # map into (-1,1)
             i = Activation('tanh')(i)
             # map into action_space
-            i = Lambda(lambda x:x * self.action_multiplier *1.05 + self.action_bias)(i)
+            i = Lambda(lambda x:x * self.action_multiplier + self.action_bias)(i)
         else:
             # map into (0,1)
             i = Activation('softmax')(i)
@@ -286,11 +300,10 @@ class nnagent(object):
         act = Input(shape=(actiondims,))
         # i = merge([inp,act],mode='concat')
         i = inp
-
-        i = resdense(128)(i)
         i = merge([i,act],mode='concat')
+        i = resdense(256)(i)
         i = resdense(128)(i)
-        i = resdense(128)(i)
+        i = resdense(64)(i)
         i = Dense(1)(i)
         out = i
         model = Model(input=[inp,act],output=out)
@@ -458,24 +471,27 @@ class nnagent(object):
 
         def quein(observation):
             global que # python 2 quirk
-            length = que.shape[0]
-            que = np.hstack([que,observation])[-length:]
+            length = len(observation)
+            que[0:-length] = que[length:] # left shift
+            que[-length:] = np.array(observation)
 
         # what the agent see as state is a stack of history observations.
 
         observation = env.reset()
         quein(observation) # quein o1
-        lastque = que.copy() # s1
 
         while True and steps <= max_steps:
             steps +=1
+
+            lastque = que.copy() # s1
 
             action = self.act(lastque) # a1
 
             if self.is_continuous:
                 # add noise to our actions, since our policy by nature is deterministic
-                exploration_noise = np.random.normal(loc=0.,scale=noise_level,size=(self.outputdims,))
+                exploration_noise = one_fsq_noise((self.outputdims,)) * noise_level
                 exploration_noise *= self.action_multiplier
+                # print(exploration_noise,exploration_noise.shape)
                 action += exploration_noise
                 action = self.clamper(action)
                 action_out = action
@@ -499,8 +515,6 @@ class nnagent(object):
             # feed into replay memory
             self.feed_one((lastque,action,reward,isdone,nextque)) # s1,a1,r1,isdone,s2
 
-            lastque = nextque
-
             if render and (steps%10==0 or realtime==True): env.render()
             if done :
                 break
@@ -519,13 +533,24 @@ class nnagent(object):
 
         q = critic.predict([obs,actions])[0]
 
-        self.logq(q)
+        self.loggraph(np.vstack([actions[0]*10+50,q]))
 
         return actions[0]
 
-    def logq(self,q):
-        showwave(q)
+    def loggraph(self,waves):
+        if not hasattr(self,'wavegraph'):
+            def rn():
+                r = np.random.uniform()
+                return 0.2+r*0.2
+            colors = []
+            for i in range(len(waves)-1):
+                color = [rn(),rn(),rn()]
+                colors.append(color)
+            colors.append([0.2,0.5,0.9])
+            self.wavegraph = wavegraph(len(waves),'actions and Q',np.array(colors))
 
+        wg = self.wavegraph
+        wg.one(waves.reshape((-1,)))
 
 class playground(object):
     def __init__(self,envname):
@@ -544,9 +569,9 @@ class playground(object):
         gym.upload(self.monpath, api_key='sk_ge0PoVXsS6C5ojZ9amTkSA')
 
 # p = playground('LunarLanderContinuous-v2')
-# p = playground('Pendulum-v0')
+p = playground('Pendulum-v0')
 # p = playground('MountainCar-v0')BipedalWalker-v2
-p = playground('BipedalWalker-v2')
+# p = playground('BipedalWalker-v2')
 
 e = p.env
 
@@ -559,7 +584,9 @@ optimizer=RMSprop()
 
 def r(ep):
     e = p.env
+    noise_level = .5
     for i in range(ep):
-        noise_level = max(5e-2,(300.-i)/50.)
+        noise_level *= .9
+        noise_level = max(1e-3,noise_level)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,max_steps=-1,noise_level=noise_level)

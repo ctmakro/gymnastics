@@ -4,6 +4,52 @@ import time
 imgw = 200
 imgh = 300
 
+class wavegraph(object):
+    def __init__(self,dims,name,colors):
+        self.dims = dims
+        self.lastshow = time.time()
+        self.lastq = np.zeros((dims,))
+
+        self.name = name
+        self.imgw = 200
+        self.imgh = 300
+
+        self.im = np.zeros((self.imgh,self.imgw,3),dtype='float32')
+
+        self.colors = colors
+
+    def one(self,q):
+        imgw,imgh = self.imgw,self.imgh
+        im = self.im
+        for i,k in enumerate(q):
+            while q[i]< -imgh/2: q[i]+=imgh
+            while q[i]> imgh/2 +10: q[i]-=imgh
+
+        im[:,0:imgw-1] = im[:,1:imgw]
+        im[:,imgw-1:imgw] = 0.
+
+        dq = np.floor(-q+imgh/2).astype('int32')
+        dlq = np.floor(-self.lastq+imgh/2).astype('int32')
+
+        for i,k in enumerate(dq):
+            if dq[i]+1>dlq[i]: dq[i],dlq[i] = dlq[i],dq[i]
+            if dq[i]==dlq[i]: dlq[i]+=1
+
+            im[dq[i]:dlq[i],imgw-1] = (1.5/(dlq[i]-dq[i]))**0.5 * self.colors[i]
+
+        self.lastq = q
+
+        if time.time()-self.lastshow>0.2:
+            self.lastshow=time.time()
+
+            im2=self.im.copy()
+
+            for i,k in enumerate(dq):
+                im2[dq[i],:] += self.colors[i]/2.
+
+            cv2.imshow(self.name,im2)
+            cv2.waitKey(1)
+
 lastshow = time.time()
 lastq = 0
 def showwave(q):
@@ -33,14 +79,14 @@ def showwave(q):
 
     im[dq:dlq,imgw-1] = (1.3/(dlq-dq))**.4
 
-    im2=im.copy()
-    im2[dq,:]+=np.array([.3,.5,.7],dtype='float32')
-
     lastq = q
 
     global lastshow
     if time.time()-lastshow>0.2:
         lastshow=time.time()
+
+        im2=im.copy()
+        im2[dq,:]+=np.array([.3,.5,.7],dtype='float32')
         cv2.imshow('q(s,a)',im2)
         cv2.waitKey(1)
 
