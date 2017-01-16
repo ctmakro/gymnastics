@@ -66,50 +66,7 @@ import keras.backend as K
 import time
 from winfrey import wavegraph
 
-from collections import deque
-
-# replay buffer per http://pemami4911.github.io/blog/2016/08/21/ddpg-rl.html
-class rpm(object):
-    #replay memory
-    def __init__(self,buffer_size):
-        self.buffer_size = buffer_size
-        self.count = 0
-        self.buffer = deque()
-
-    def add(self, tup):
-        experience = tup
-        if self.count < self.buffer_size:
-            self.buffer.append(experience)
-            self.count += 1
-        else:
-            self.buffer.popleft()
-            self.buffer.append(experience)
-
-    def size(self):
-        return self.count
-
-    def sample_batch(self, batch_size):
-        '''
-        batch_size specifies the number of experiences to add
-        to the batch. If the replay buffer has less than batch_size
-        elements, simply return all of the elements within the buffer.
-        Generally, you'll want to wait until the buffer has at least
-        batch_size elements before beginning to sample from it.
-        '''
-        batch = []
-
-        if self.count < batch_size:
-            batch = random.sample(self.buffer, self.count)
-        else:
-            batch = random.sample(self.buffer, batch_size)
-
-        item_count = len(batch[0])
-        res = []
-        for i in range(item_count):
-            k = np.array([item[i] for item in batch])
-            if len(k.shape)==1: k = k.reshape(k.shape+(1,))
-            res.append(k)
-        return res
+from rpm import rpm # replay memory implementation
 
 def bn(i):
     return i
@@ -302,9 +259,9 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         inp = Input(shape=(inputdims,))
         i = inp
-        i = Dense(128)(i)
-        i = resdense(128,128)(i)
-        i = resdense(128,128)(i)
+        i = Dense(256)(i)
+        i = resdense(256,256)(i)
+        # i = resdense(128,128)(i)
         i = relu(bn(i))
 
         i = Dense(outputdims)(i)
@@ -328,9 +285,9 @@ class nnagent(object):
         act = Input(shape=(actiondims,))
         i = merge([inp,act],mode='concat')
 
-        i = Dense(128)(i)
-        i = resdense(128,128)(i)
-        i = resdense(128,128)(i)
+        i = Dense(256)(i)
+        i = resdense(256,256)(i)
+        # i = resdense(128,128)(i)
         i = relu(bn(i))
 
         i = Dense(1)(i)
@@ -615,9 +572,9 @@ optimizer=RMSprop()
 
 def r(ep):
     e = p.env
-    noise_level = 2.
+    noise_level = 1.
     for i in range(ep):
-        noise_level *= .95
-        noise_level = max(1e-3,noise_level)
+        noise_level *= .98
+        noise_level = max(1e-4,noise_level)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,max_steps=-1,noise_level=noise_level)
