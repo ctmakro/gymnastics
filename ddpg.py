@@ -68,6 +68,8 @@ from winfrey import wavegraph
 
 from rpm import rpm # replay memory implementation
 
+from noise import one_fsq_noise
+
 def bn(i):
     return i
     return BatchNormalization(mode=1)(i)
@@ -111,23 +113,6 @@ def softmax(x):
     ex = np.exp(x)
     return ex / np.sum(ex, axis=0)
 
-# 1/f^2 noise: http://hal.in2p3.fr/in2p3-00024797/document
-one_fsq_buffer = np.array([0.])
-def one_fsq_noise(size):
-    global one_fsq_buffer
-    # draw one gaussian
-    g = np.random.normal(loc=0.,scale=1.,size=size)
-
-    if one_fsq_buffer.shape != size:
-        one_fsq_buffer = np.zeros(size,dtype='float32')
-
-    one_fsq_buffer += g
-
-    # high pass, i guess
-    one_fsq_buffer *= .98
-
-    return one_fsq_buffer
-
 class nnagent(object):
     def __init__(self,
     observation_space,
@@ -137,6 +122,8 @@ class nnagent(object):
     optimizer=RMSprop()
     ):
         self.rpm = rpm(1000000) # 1M history
+        self.noise_source = one_fsq_noise()
+
         self.observation_stack_factor = stack_factor
 
         self.inputdims = observation_space.shape[0] * self.observation_stack_factor
@@ -475,7 +462,7 @@ class nnagent(object):
 
             if self.is_continuous:
                 # add noise to our actions, since our policy by nature is deterministic
-                exploration_noise = one_fsq_noise((self.outputdims,)) * noise_level
+                exploration_noise = self.noise_source.one((self.outputdims,),noise_level)
                 exploration_noise *= self.action_multiplier
                 # print(exploration_noise,exploration_noise.shape)
                 action += exploration_noise
@@ -520,8 +507,11 @@ class nnagent(object):
         q = critic.predict([obs,actions])[0]
 
         disp_actions = (actions[0]-self.action_bias) / self.action_multiplier
-        disp_actions = disp_actions * 5 + np.arange(self.outputdims) * 12.0 + 20
-        self.loggraph(np.hstack([disp_actions,q]))
+        disp_actions = disp_actions * 5 + np.arange(self.outputdims) * 12.0 + 30
+
+        noise = self.noise_source.ask() * 5 - np.arange(self.outputdims) * 12.0 - 30
+
+        self.loggraph(np.hstack([disp_actions,noise,q]))
 
         return actions[0]
 
@@ -535,7 +525,7 @@ class nnagent(object):
                 color = [rn(),rn(),rn()]
                 colors.append(color)
             colors.append([0.2,0.5,0.9])
-            self.wavegraph = wavegraph(len(waves),'actions and Q',np.array(colors))
+            self.wavegraph = wavegraph(len(waves),'actions/noises/Q',np.array(colors))
 
         wg = self.wavegraph
         wg.one(waves.reshape((-1,)))

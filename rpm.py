@@ -1,5 +1,6 @@
 from collections import deque
 import numpy as np
+import random
 
 # replay buffer per http://pemami4911.github.io/blog/2016/08/21/ddpg-rl.html
 class rpm(object):
