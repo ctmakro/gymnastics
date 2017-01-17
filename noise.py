@@ -16,9 +16,9 @@ class one_fsq_noise(object):
         # high pass a little
         self.buffer *= .98
 
-        return self.buffer
+        return self.buffer.copy()
 
     def ask(self):
-        return self.buffer
+        return self.buffer.copy()
 
 # 1/f^2 noise: http://hal.in2p3.fr/in2p3-00024797/document
