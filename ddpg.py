@@ -119,12 +119,14 @@ class nnagent(object):
     action_space,
     stack_factor=1,
     discount_factor=.99, # gamma
-    optimizer=RMSprop()
+    optimizer=RMSprop(),
+    train_skip_every=1,
     ):
         self.rpm = rpm(1000000) # 1M history
+        self.render = True
         self.noise_source = one_fsq_noise()
         self.train_counter = 0
-        self.train_skip_every = 1
+        self.train_skip_every = train_skip_every
         self.observation_stack_factor = stack_factor
 
         self.inputdims = observation_space.shape[0] * self.observation_stack_factor
@@ -488,21 +490,26 @@ class nnagent(object):
         self.rpm.add(tup)
 
     # gymnastics
-    def play(self,env,max_steps=-1,realtime=False,render=True,noise_level=0.): # play 1 episode
+    def play(self,env,max_steps=-1,realtime=False,noise_level=0.): # play 1 episode
+        timer = time.time()
         max_steps = max_steps if max_steps > 0 else 50000
         steps = 0
         total_reward = 0
+        render = self.render
 
         # stack a little history to ensure markov property
         # LSTM will definitely be used here in the future...
-        global que # python 2 quirk
-        que = np.zeros((self.inputdims,),dtype='float32') # list of recent history actions
+        # global que # python 2 quirk
+        self.que = np.zeros((self.inputdims,),dtype='float32') # list of recent history actions
 
         def quein(observation):
-            global que # python 2 quirk
+            # global que # python 2 quirk
             length = len(observation)
-            que[0:-length] = que[length:] # left shift
-            que[-length:] = np.array(observation)
+            self.que[0:-length] = self.que[length:] # left shift
+            self.que[-length:] = np.array(observation)
+
+        def quecopy():
+            return self.que.copy()
 
         # what the agent see as state is a stack of history observations.
 
@@ -512,9 +519,9 @@ class nnagent(object):
         while True and steps <= max_steps:
             steps +=1
 
-            lastque = que.copy() # s1
+            thisque = quecopy() # s1
 
-            action = self.act(lastque) # a1
+            action = self.act(thisque) # a1
 
             if self.is_continuous:
                 # add noise to our actions, since our policy by nature is deterministic
@@ -539,10 +546,10 @@ class nnagent(object):
             total_reward += reward
 
             quein(observation) # quein o2
-            nextque = que.copy() # s2
+            nextque = quecopy() # s2
 
             # feed into replay memory
-            self.feed_one((lastque,action,reward,isdone,nextque)) # s1,a1,r1,isdone,s2
+            self.feed_one((thisque,action,reward,isdone,nextque)) # s1,a1,r1,isdone,s2
 
             if render and (steps%10==0 or realtime==True): env.render()
             if done :
@@ -551,7 +558,11 @@ class nnagent(object):
             verbose= 2 if steps==1 else 0
             self.train(verbose=verbose)
 
-        print('episode done in',steps,'steps, total reward',total_reward)
+        # print('episode done in',steps,'steps',time.time()-timer,'second total reward',total_reward)
+        totaltime = time.time()-timer
+        print('episode done in {} steps in {:.2f} sec, {:.4f} sec/step, got reward :{:.2f}'.format(
+        steps,totaltime,totaltime/steps,total_reward
+        ))
         return
 
     # one step of action, given observation
@@ -612,14 +623,14 @@ e = p.env
 agent = nnagent(
 e.observation_space,
 e.action_space,
-discount_factor=.996,
-optimizer=RMSprop()
 discount_factor=.99,
 stack_factor=1,
-optimizer='rmsprop'
+optimizer='rmsprop',
+train_skip_every=20,
 )
 
 def r(ep):
+    agent.render = False
     e = p.env
     noise_level = 1.
     for i in range(ep):
@@ -627,3 +638,8 @@ def r(ep):
         noise_level = max(1e-4,noise_level)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,max_steps=-1,noise_level=noise_level)
+
+def test():
+    e = p.env
+    agent.render = True
+    agent.play(e,max_steps=-1,noise_level=0.)
