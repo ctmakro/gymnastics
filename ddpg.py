@@ -75,7 +75,7 @@ def bn(i):
     return BatchNormalization(mode=1)(i)
 
 def relu(i):
-    return Activation('elu')(i)
+    return Activation('relu')(i)
 
 # residual dense unit
 def resdense(idim,odim):
@@ -123,7 +123,8 @@ class nnagent(object):
     ):
         self.rpm = rpm(1000000) # 1M history
         self.noise_source = one_fsq_noise()
-
+        self.train_counter = 0
+        self.train_skip_every = 1
         self.observation_stack_factor = stack_factor
 
         self.inputdims = observation_space.shape[0] * self.observation_stack_factor
@@ -165,7 +166,7 @@ class nnagent(object):
         self.optimizer = optimizer
 
         ids,ods = self.inputdims,self.outputdims
-        self.actor = self.create_actor_network(ids,ods)
+        self.actor, self.frozen_actor = self.create_actor_network(ids,ods)
         self.critic, self.frozen_critic = self.create_critic_network(ids,ods)
 
         print('inputdims:{}, outputdims:{}'.format(ids,ods))
@@ -175,13 +176,14 @@ class nnagent(object):
         self.critic.summary()
 
         # target networks: identical copies of actor and critic
-        self.actor_target = self.create_actor_network(ids,ods)
+        self.actor_target,self.frozen_actor_target = self.create_actor_network(ids,ods)
         self.critic_target, self.frozen_critic_target = self.create_critic_network(ids,ods)
 
         self.replace_weights(tau=1.)
 
         self.create_q1_target_model()
         self.create_actor_trainer()
+        self.create_critic_trainer()
 
     def create_actor_trainer(self):
         # now the dirty part: the actor trainer --------------------------------
@@ -246,8 +248,8 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         inp = Input(shape=(inputdims,))
         i = inp
-        i = Dense(256)(i)
-        i = resdense(256,256)(i)
+        i = Dense(128)(i)
+        i = resdense(128,128)(i)
         # i = resdense(128,128)(i)
         i = relu(bn(i))
 
@@ -264,7 +266,13 @@ class nnagent(object):
 
         out = i
         model = Model(input=inp,output=out)
-        return model
+
+        # now we create a frozen_model,
+        # that uses the same layers with weights frozen when trained.
+        frozen_model = Model(input=inp,output=out)
+        frozen_model.trainable = False
+
+        return model,frozen_model
 
     # q = critic(s,a) : predict q given state and action
     def create_critic_network(self,inputdims,actiondims):
@@ -272,23 +280,19 @@ class nnagent(object):
         act = Input(shape=(actiondims,))
         i = merge([inp,act],mode='concat')
 
-        i = Dense(256)(i)
-        i = resdense(256,256)(i)
+        i = Dense(128)(i)
+        i = resdense(128,128)(i)
         # i = resdense(128,128)(i)
         i = relu(bn(i))
 
         i = Dense(1)(i)
         out = i
         model = Model(input=[inp,act],output=out)
-        model.compile(loss='mse',optimizer=self.optimizer)
 
         # now we create a frozen_model,
         # that uses the same layers with weights frozen when trained.
-        for i in model.layers:
-            i.trainable = False # froze the layers
-
         frozen_model = Model(input=[inp,act],output=out)
-        frozen_model.compile(loss='mse',optimizer=self.optimizer)
+        frozen_model.trainable = False
 
         return model,frozen_model
 
@@ -297,8 +301,8 @@ class nnagent(object):
         # for explaination of this part, please check train()
 
         s2i = Input(shape=(self.inputdims,))
-        a2i = self.actor_target(s2i)
-        q2i = self.critic_target([s2i,a2i])
+        a2i = self.frozen_actor_target(s2i)
+        q2i = self.frozen_critic_target([s2i,a2i])
 
         r1i = Input(shape=(1,))
         isdonei = Input(shape=(1,))
@@ -315,18 +319,58 @@ class nnagent(object):
 
         self.q1_target_model = q1_target_model
 
+    def create_critic_trainer(self):
+        # this part is also for performance optimization...
+
+        qtm = self.q1_target_model
+        qtm.trainable = False
+
+        s1i = Input(shape=(self.inputdims,))
+        s2i = Input(shape=(self.inputdims,))
+        a1i = Input(shape=(self.outputdims,))
+
+        r1i = Input(shape=(1,))
+        isdonei = Input(shape=(1,))
+
+        q1t = qtm([s2i,r1i,isdonei])
+        crit = self.critic([s1i,a1i])
+
+        def mse(x):
+            return (x[0]-x[1])**2
+
+        def calc_output_shape(input_shapes):
+            return input_shapes[0] # shape of r1i
+
+        loss = merge([q1t,crit],mode=mse,output_shape=calc_output_shape)
+
+        def thru(y_true,y_pred):
+            return y_pred
+
+        model = Model(input=[s1i,a1i,r1i,isdonei,s2i],output=loss)
+        model.compile(loss=thru,optimizer=self.optimizer)
+
+        self.critic_trainer = model
+
     def train(self,verbose=1):
         memory = self.rpm
         critic,frozen_critic = self.critic,self.frozen_critic
         actor = self.actor
         batch_size = 64
+        total_size = batch_size * self.train_skip_every
         epochs = 1
 
-        if memory.size() > batch_size*2:
+        self.train_counter+=1
+        self.train_counter %= self.train_skip_every
+
+        if self.train_counter != 0: # train every few steps
+            return
+
+
+        if memory.size() > total_size:
             #if enough samples in memory
 
             # sample randomly a minibatch from memory
-            [s1,a1,r1,isdone,s2] = memory.sample_batch(batch_size)
+            [s1,a1,r1,isdone,s2] = memory.sample_batch(total_size)
             # print(s1.shape,a1.shape,r1.shape,isdone.shape,s2.shape)
 
             if False: # the following is optimized away but kept for clarity.
@@ -366,11 +410,23 @@ class nnagent(object):
                 q1_target_model = Model(input=[s2i,r1i,isdonei],output=q1_target)
 
             else:
-                # q1_target_model is already implemented in create_q1_target_model()
-                q1_target = self.q1_target_model.predict([s2,r1,isdone])
 
-            # train the critic to predict the q1_target, given s1 and a1.
-            critic.fit([s1,a1],q1_target,
+                # q1_target_model is already implemented in create_q1_target_model()
+                # q1_target = self.q1_target_model.predict([s2,r1,isdone])
+
+                # all above were optimized away...
+                critic_trainer = self.critic_trainer
+
+            # critic.fit([s1,a1],
+            # q1_target,
+            # batch_size=batch_size,
+            # nb_epoch=epochs,
+            # verbose=verbose,
+            # shuffle=False
+            # )
+
+            critic_trainer.fit([s1,a1,r1,isdone,s2],
+            np.zeros((total_size,1)), # useless target label
             batch_size=batch_size,
             nb_epoch=epochs,
             verbose=verbose,
@@ -414,7 +470,7 @@ class nnagent(object):
                 actor_trainer = self.actor_trainer
 
                 actor_trainer.fit(s1,
-                np.zeros((batch_size,1)), # useless target label
+                np.zeros((total_size,1)), # useless target label
                 batch_size=batch_size,
                 nb_epoch=epochs,
                 verbose=verbose,
@@ -422,7 +478,7 @@ class nnagent(object):
                 )
 
             # now both the actor and the critic have improved.
-            self.replace_weights()
+            self.replace_weights(tau=0.001 * self.train_skip_every)
 
         else:
             pass
@@ -558,6 +614,9 @@ e.observation_space,
 e.action_space,
 discount_factor=.996,
 optimizer=RMSprop()
+discount_factor=.99,
+stack_factor=1,
+optimizer='rmsprop'
 )
 
 def r(ep):
