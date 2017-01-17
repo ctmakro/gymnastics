@@ -625,8 +625,8 @@ e.observation_space,
 e.action_space,
 discount_factor=.99,
 stack_factor=1,
-optimizer='rmsprop',
-train_skip_every=20,
+optimizer=RMSprop(lr=1e-4),
+train_skip_every=50,
 )
 
 def r(ep):
@@ -634,12 +634,12 @@ def r(ep):
     e = p.env
     noise_level = 1.
     for i in range(ep):
-        noise_level *= .98
-        noise_level = max(1e-4,noise_level)
+        noise_level *= .95
+        noise_level = max(1e-8,noise_level - 1e-4)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,max_steps=-1,noise_level=noise_level)
 
 def test():
     e = p.env
     agent.render = True
-    agent.play(e,max_steps=-1,noise_level=0.)
+    agent.play(e,realtime=True,max_steps=-1,noise_level=1e-11)
