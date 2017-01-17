@@ -1,8 +1,11 @@
 import cv2
 import numpy as np
 import time
+import threading as td
 imgw = 200
 imgh = 300
+
+# cv2.startWindowThread()
 
 class wavegraph(object):
     def __init__(self,dims,name,colors):
@@ -17,38 +20,72 @@ class wavegraph(object):
         self.im = np.zeros((self.imgh,self.imgw,3),dtype='float32')
 
         self.colors = colors
+        self.que = []
+        self.quelock = td.Lock()
+
+        self.painter = td.Thread(target=self._one)
+        self.painter.start()
 
     def one(self,q):
-        imgw,imgh = self.imgw,self.imgh
-        im = self.im
-        for i,k in enumerate(q):
-            while q[i]< -imgh/2: q[i]+=imgh
-            while q[i]> imgh/2 +10: q[i]-=imgh
+        self.quelock.acquire()
+        self.que.append(q)
+        self.quelock.release()
 
-        im[:,0:imgw-1] = im[:,1:imgw]
-        im[:,imgw-1:imgw] = 0.
+        if not self.painter.is_alive():
+            self.painter = td.Thread(target=self._one)
+            self.painter.start()
 
-        dq = np.floor(-q+imgh/2).astype('int32')
-        dlq = np.floor(-self.lastq+imgh/2).astype('int32')
+        if time.time()-self.lastshow>0.125:
+            if hasattr(self,'im2'):
+                self.lastshow=time.time()
+                cv2.namedWindow(self.name)
+                cv2.imshow(self.name,self.im2)
+                cv2.waitKey(1)
 
-        for i,k in enumerate(dq):
-            if dq[i]+1>dlq[i]: dq[i],dlq[i] = dlq[i],dq[i]
-            if dq[i]==dlq[i]: dlq[i]+=1
+    def _one(self):
+        loop = 60 # loop 60 times before quit
+        while loop>0:
+            loop-=1
+            time.sleep(0.032) #30 fps
+            while len(self.que) > 0:
+                # print('winfrey paint...')
+                self.quelock.acquire()
+                q = self.que.pop(0)
+                self.quelock.release()
 
-            im[dq[i]:dlq[i],imgw-1] = (1.5/(dlq[i]-dq[i]))**0.4 * self.colors[i]
+                imgw,imgh = self.imgw,self.imgh
+                im = self.im
+                for i,k in enumerate(q):
+                    while q[i]< -imgh/2: q[i]+=imgh
+                    while q[i]> imgh/2 +10: q[i]-=imgh
 
-        self.lastq = q
+                im[:,0:imgw-1] = im[:,1:imgw]
+                im[:,imgw-1:imgw] = 0.
 
-        if time.time()-self.lastshow>0.2:
-            self.lastshow=time.time()
+                dq = np.floor(-q+imgh/2).astype('int32')
+                dlq = np.floor(-self.lastq+imgh/2).astype('int32')
 
-            im2=self.im.copy()
+                for i,k in enumerate(dq):
+                    if dq[i]+1>dlq[i]: dq[i],dlq[i] = dlq[i],dq[i]
+                    if dq[i]==dlq[i]: dlq[i]+=1
+
+                    im[dq[i]:dlq[i],imgw-1] = (1.5/(dlq[i]-dq[i]))**0.4 * self.colors[i]
+
+                self.lastq = q
+
+            im2=im.copy()
 
             for i,k in enumerate(dq):
                 im2[dq[i],:] += self.colors[i]/2.
 
-            cv2.imshow(self.name,im2)
-            cv2.waitKey(1)
+            self.im2 = im2
+
+            # if time.time()-self.lastshow>0.1:
+            #     if hasattr(self,'im2'):
+            #         self.lastshow=time.time()
+            #         cv2.namedWindow(self.name)
+            #         cv2.imshow(self.name,self.im2)
+            #         cv2.waitKey(1)
 
 lastshow = time.time()
 lastq = 0
