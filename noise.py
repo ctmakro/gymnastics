@@ -14,7 +14,7 @@ class one_fsq_noise(object):
         self.buffer += g
 
         # high pass a little
-        self.buffer *= .98
+        self.buffer *= .95
 
         return self.buffer.copy()
 
