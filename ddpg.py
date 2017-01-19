@@ -282,9 +282,9 @@ class nnagent(object):
         act = Input(shape=(actiondims,))
         i = merge([inp,act],mode='concat')
 
-        i = Dense(128)(i)
-        i = resdense(128,128)(i)
-        # i = resdense(128,128)(i)
+        i = Dense(64)(i)
+        i = resdense(64,64)(i)
+        i = resdense(64,64)(i)
         i = relu(bn(i))
 
         i = Dense(1)(i)
@@ -532,6 +532,11 @@ class nnagent(object):
                 action = self.clamper(action)
                 action_out = action
             else:
+                exploration_noise = self.noise_source.one((self.outputdims,),noise_level)
+                exploration_noise *= self.action_multiplier
+                action += exploration_noise
+                # action = self.clamper(action)
+                action = softmax(action)
                 # discretize our actions
                 probabilities = action
                 csprob = np.cumsum(probabilities)
