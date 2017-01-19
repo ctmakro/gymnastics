@@ -56,6 +56,7 @@ class wavegraph(object):
                 imgw,imgh = self.imgw,self.imgh
                 im = self.im
                 for i,k in enumerate(q):
+                    q[i] = q[i] % imgh
                     while q[i]< -imgh/2: q[i]+=imgh
                     while q[i]> imgh/2 +10: q[i]-=imgh
 
