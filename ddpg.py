@@ -187,6 +187,26 @@ class nnagent(object):
         self.create_actor_trainer()
         self.create_critic_trainer()
 
+    def save(self,fname):
+        self.actor.save(fname+'_actor.h5')
+        self.critic.save(fname+'_critic.h5')
+        self.actor_target.save(fname+'_actor_t.h5')
+        self.critic_target.save(fname+'_critic_t.h5')
+
+        import pickle
+        f = open(fname+'_rpm.obj', 'w')
+        pickle.dump(self.rpm,f)
+
+    def load(self,fname):
+        self.actor = load_model(fname+'_actor.h5')
+        self.critic = load_model(fname+'_critic.h5')
+        self.actor_target = load_model(fname+'_actor_t.h5')
+        self.critic_target = load_model(fname+'_critic_t.h5')
+
+        import pickle
+        f = open(fname+'_rpm.obj','r')
+        self.rpm = pickle.load(f)
+
     def create_actor_trainer(self):
         # now the dirty part: the actor trainer --------------------------------
 
