@@ -165,9 +165,9 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         c = Can()
         c.add(Dense(inputdims,64))
-        c.add(Act('tanh'))
-        # c.add(ResDense(64))
-        # c.add(ResDense(64))
+        # c.add(Act('tanh'))
+        c.add(ResDense(64))
+        c.add(ResDense(64))
         c.add(Dense(64,outputdims))
 
         if self.is_continuous:
@@ -185,17 +185,19 @@ class nnagent(object):
         concat = Lambda(lambda x:tf.concat([x[0],x[1]],axis=1))
         # concat state and action
         den1 = Dense(inputdims,64)
-        den2 = Dense(64+actiondims, 64)
-        den3 = Dense(64,1)
-        c.incan([concat,den1,den2,den3])
+        den1r = ResDense(64)
+        den2r = ResDense(64+actiondims)
+        den2r2 = ResDense(64+actiondims)
+        den3 = Dense(64+actiondims,1)
+        c.incan([concat,den1,den1r,den2r,den2r2,den3])
 
         def call(i):
             state = i[0]
             action = i[1]
             h1 = den1(state)
-            h1 = tf.tanh(h1)
-            h2 = den2(concat([h1,action]))
-            h2 = tf.tanh(h2)
+            h1 = den1r(h1)
+            h2 = den2r(concat([h1,action]))
+            h2 = den2r(h2)
             q = den3(h2)
             return q
         c.set_function(call)
@@ -451,10 +453,10 @@ train_skip_every=1,
 def r(ep):
     # agent.render = True
     e = p.env
-    noise_level = .05
+    noise_level = .1
     for i in range(ep):
-        noise_level *= .95
-        noise_level = max(1e-11,noise_level - 1e-4)
+        noise_level *= .99
+        noise_level = max(1e-22,noise_level - 1e-4)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,realtime=True,max_steps=-1,noise_level=noise_level)
 
