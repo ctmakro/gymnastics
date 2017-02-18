@@ -21,17 +21,19 @@ class wavegraph(object):
 
         self.colors = colors
         self.que = []
-        self.quelock = td.Lock()
+        # self.quelock = td.Lock()
+        # deque is thread safe.
 
         self.painter = td.Thread(target=self._one)
         self.painter.start()
 
     def one(self,q):
-        self.quelock.acquire()
+        # self.quelock.acquire()
         self.que.append(q)
-        self.quelock.release()
+        # self.quelock.release()
 
         if not self.painter.is_alive():
+            # print('dead, new one')
             self.painter = td.Thread(target=self._one)
             self.painter.start()
 
@@ -49,9 +51,9 @@ class wavegraph(object):
             time.sleep(0.032) #30 fps
             while len(self.que) > 0:
                 # print('winfrey paint...')
-                self.quelock.acquire()
+                # self.quelock.acquire()
                 q = self.que.pop(0)
-                self.quelock.release()
+                # self.quelock.release()
 
                 imgw,imgh = self.imgw,self.imgh
                 im = self.im
@@ -87,6 +89,8 @@ class wavegraph(object):
             #         cv2.namedWindow(self.name)
             #         cv2.imshow(self.name,self.im2)
             #         cv2.waitKey(1)
+
+        # print('loop ended')
 
 lastshow = time.time()
 lastq = 0
