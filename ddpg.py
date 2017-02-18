@@ -83,9 +83,9 @@ class ResDense(Can): # residual dense unit
     def __call__(self,i):
         inp = i
         i = self.d[0](i)
-        i = Act('tanh')(i)
+        i = Act('elu')(i)
         i = self.d[1](i)
-        i = Act('tanh')(i)
+        i = Act('elu')(i)
         return inp + i
 
 def softmax(x):
@@ -165,8 +165,9 @@ class nnagent(object):
     def create_actor_network(self,inputdims,outputdims):
         c = Can()
         c.add(Dense(inputdims,64))
-        c.add(ResDense(64))
-        c.add(ResDense(64))
+        c.add(Act('tanh'))
+        # c.add(ResDense(64))
+        # c.add(ResDense(64))
         c.add(Dense(64,outputdims))
 
         if self.is_continuous:
@@ -181,14 +182,32 @@ class nnagent(object):
     # q = critic(s,a) : predict q given state and action
     def create_critic_network(self,inputdims,actiondims):
         c = Can()
-        c.add(Lambda(lambda x:tf.concat([x[0],x[1]],axis=1)))
+        concat = Lambda(lambda x:tf.concat([x[0],x[1]],axis=1))
         # concat state and action
-        c.add(Dense(inputdims+actiondims,64))
-        c.add(ResDense(64))
-        c.add(ResDense(64))
-        c.add(Dense(64,1))
-        c.chain()
+        den1 = Dense(inputdims,64)
+        den2 = Dense(64+actiondims, 64)
+        den3 = Dense(64,1)
+        c.incan([concat,den1,den2,den3])
+
+        def call(i):
+            state = i[0]
+            action = i[1]
+            h1 = den1(state)
+            h1 = tf.tanh(h1)
+            h2 = den2(concat([h1,action]))
+            h2 = tf.tanh(h2)
+            q = den3(h2)
+            return q
+        c.set_function(call)
         return c
+
+        # c.add(Dense(inputdims+actiondims,64))
+        # c.add(Act('elu'))
+        # # c.add(ResDense(64))
+        # c.add(ResDense(64))
+        # c.add(Dense(64,1))
+        # c.chain()
+        # return c
 
     def train_step_gen(self):
         s1 = tf.placeholder(tf.float32,shape=[None,self.inputdims])
