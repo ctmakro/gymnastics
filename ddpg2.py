@@ -83,9 +83,9 @@ class ResDense(Can): # residual dense unit
     def __call__(self,i):
         inp = i
         i = self.d[0](i)
-        i = Act('elu')(i)
+        i = Act('relu')(i)
         i = self.d[1](i)
-        i = Act('elu')(i)
+        i = Act('relu')(i)
         return inp + i
 
 def softmax(x):
@@ -197,7 +197,7 @@ class nnagent(object):
             h1 = den1(state)
             h1 = den1r(h1)
             h2 = den2r(concat([h1,action]))
-            h2 = den2r(h2)
+            h2 = den2r2(h2)
             q = den3(h2)
             return q
         c.set_function(call)
@@ -251,8 +251,8 @@ class nnagent(object):
         # q = critic.infer([obs,actions])[0]
 
         # optimizer on
-        # opt = tf.train.MomentumOptimizer(1e-1,momentum=0.9)
-        opt = tf.train.RMSPropOptimizer(1e-4)
+        opt = tf.train.MomentumOptimizer(1e-4,momentum=0.5,use_nesterov=True)
+        # opt = tf.train.RMSPropOptimizer(1e-4)
         cstep = opt.minimize(critic_loss,
             var_list=self.critic.get_weights())
         astep = opt.minimize(actor_loss,
@@ -436,26 +436,26 @@ class playground(object):
         gym.upload(self.monpath, api_key='sk_ge0PoVXsS6C5ojZ9amTkSA')
 
 # p = playground('LunarLanderContinuous-v2')
-p = playground('Pendulum-v0')
+# p = playground('Pendulum-v0')
 # p = playground('MountainCar-v0')BipedalWalker-v2
-# p = playground('BipedalWalker-v2')
+p = playground('BipedalWalker-v2')
 
 e = p.env
 
 agent = nnagent(
 e.observation_space,
 e.action_space,
-discount_factor=.99,
-stack_factor=1,
+discount_factor=.993,
+stack_factor=2,
 train_skip_every=1,
 )
 
 def r(ep):
     # agent.render = True
     e = p.env
-    noise_level = .1
+    noise_level = 1.
     for i in range(ep):
-        noise_level *= .99
+        noise_level *= .995
         noise_level = max(1e-22,noise_level - 1e-4)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,realtime=True,max_steps=-1,noise_level=noise_level)
