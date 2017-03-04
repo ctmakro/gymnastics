@@ -71,22 +71,20 @@ import tensorflow as tf
 import canton as ct
 from canton import *
 
-class ResDense(Can): # residual dense unit
-    def __init__(self,nip):
-        super().__init__()
-        nbp = int(nip/4)
-        d0 = Dense(nip,nbp)
-        d1 = Dense(nbp,nip)
-        self.d = [d0,d1]
-        self.incan(self.d)
-
-    def __call__(self,i):
+def ResDense(nip):
+    c = Can()
+    nbp = int(nip/2)
+    d0 = c.add(Dense(nip,nbp))
+    d1 = c.add(Dense(nbp,nip))
+    def call(i):
         inp = i
-        i = self.d[0](i)
-        i = Act('relu')(i)
-        i = self.d[1](i)
-        i = Act('relu')(i)
-        return inp + i
+        i = d0(i)
+        i = Act('elu')(i)
+        i = d1(i)
+        i = Act('elu')(i)
+        return i+inp
+    c.set_function(call)
+    return c
 
 def softmax(x):
     """Compute softmax values for each sets of scores in x."""
@@ -164,11 +162,9 @@ class nnagent(object):
     # a = actor(s) : predict actions given state
     def create_actor_network(self,inputdims,outputdims):
         c = Can()
-        c.add(Dense(inputdims,64))
-        # c.add(Act('tanh'))
-        c.add(ResDense(64))
-        c.add(ResDense(64))
-        c.add(Dense(64,outputdims))
+        c.add(Dense(inputdims,256))
+        c.add(ResDense(256))
+        c.add(Dense(256,outputdims))
 
         if self.is_continuous:
             c.add(Act('tanh'))
@@ -184,32 +180,20 @@ class nnagent(object):
         c = Can()
         concat = Lambda(lambda x:tf.concat([x[0],x[1]],axis=1))
         # concat state and action
-        den1 = Dense(inputdims,64)
-        den1r = ResDense(64)
-        den2r = ResDense(64+actiondims)
-        den2r2 = ResDense(64+actiondims)
-        den3 = Dense(64+actiondims,1)
-        c.incan([concat,den1,den1r,den2r,den2r2,den3])
+        den1 = c.add(Dense(inputdims,128))
+        den2r = c.add(ResDense(128+actiondims))
+        den3 = c.add(Dense(128+actiondims, 1))
 
         def call(i):
             state = i[0]
             action = i[1]
             h1 = den1(state)
-            h1 = den1r(h1)
+            h1 = Act('elu')(h1)
             h2 = den2r(concat([h1,action]))
-            h2 = den2r2(h2)
             q = den3(h2)
             return q
         c.set_function(call)
         return c
-
-        # c.add(Dense(inputdims+actiondims,64))
-        # c.add(Act('elu'))
-        # # c.add(ResDense(64))
-        # c.add(ResDense(64))
-        # c.add(Dense(64,1))
-        # c.chain()
-        # return c
 
     def train_step_gen(self):
         s1 = tf.placeholder(tf.float32,shape=[None,self.inputdims])
@@ -232,7 +216,7 @@ class nnagent(object):
         actor_loss = tf.reduce_mean(- q1_predict)
         # maximize q1_predict -> better actor
 
-        # 3. shift the weights
+        # 3. shift the weights (aka target network)
         tau = tf.Variable(0.001)
         aw = self.actor.get_weights()
         atw = self.actor_target.get_weights()
@@ -247,16 +231,16 @@ class nnagent(object):
         # 4. inference
         a_infer = self.actor(s1)
         q_infer = self.critic([s1,a_infer])
-        # actions = actor.infer(obs)
-        # q = critic.infer([obs,actions])[0]
+
+        # 5. L2 weight decay on critic
+        decay_c = tf.reduce_mean([tf.reduce_mean(w**2) for w in cw])* 0.004
 
         # optimizer on
-        opt = tf.train.MomentumOptimizer(1e-4,momentum=0.5,use_nesterov=True)
-        # opt = tf.train.RMSPropOptimizer(1e-4)
-        cstep = opt.minimize(critic_loss,
-            var_list=self.critic.get_weights())
-        astep = opt.minimize(actor_loss,
-            var_list=self.actor.get_weights())
+        # actor is harder to stabilize...
+        opt_actor = tf.train.AdamOptimizer(2e-4)
+        opt_critic = tf.train.AdamOptimizer(1e-3)
+        cstep = opt_critic.minimize(critic_loss+decay_c, var_list=cw)
+        astep = opt_actor.minimize(actor_loss, var_list=aw)
 
         def feed(memory):
             [s1d,a1d,r1d,isdoned,s2d] = memory # d suffix means data
@@ -292,14 +276,14 @@ class nnagent(object):
         if self.train_counter != 0: # train every few steps
             return
 
-        if memory.size() > total_size:
+        if memory.size() > total_size * 64:
             #if enough samples in memory
+            for i in range(self.train_skip_every):
+                # sample randomly a minibatch from memory
+                [s1,a1,r1,isdone,s2] = memory.sample_batch(batch_size)
+                # print(s1.shape,a1.shape,r1.shape,isdone.shape,s2.shape)
 
-            # sample randomly a minibatch from memory
-            [s1,a1,r1,isdone,s2] = memory.sample_batch(total_size)
-            # print(s1.shape,a1.shape,r1.shape,isdone.shape,s2.shape)
-
-            self.feed([s1,a1,r1,isdone,s2])
+                self.feed([s1,a1,r1,isdone,s2])
 
     def feed_one(self,tup):
         self.rpm.add(tup)
@@ -370,7 +354,7 @@ class nnagent(object):
             # feed into replay memory
             self.feed_one((thisque,action,reward,isdone,nextque)) # s1,a1,r1,isdone,s2
 
-            if self.render==True and (steps%10==0 or realtime==True):
+            if self.render==True and (steps%20==0 or realtime==True):
                 env.render()
             if done :
                 break
@@ -393,16 +377,15 @@ class nnagent(object):
         # actions = actor.infer(obs)
         # q = critic.infer([obs,actions])[0]
         [actions,q] = self.joint_inference(obs)
-        q = q[0]
+        actions,q = actions[0],q[0]
 
-        disp_actions = (actions[0]-self.action_bias) / self.action_multiplier
+        disp_actions = (actions-self.action_bias) / self.action_multiplier
         disp_actions = disp_actions * 5 + np.arange(self.outputdims) * 12.0 + 30
 
         noise = self.noise_source.ask() * 5 - np.arange(self.outputdims) * 12.0 - 30
 
         self.loggraph(np.hstack([disp_actions,noise,q]))
-
-        return actions[0]
+        return actions
 
     def loggraph(self,waves):
         if not hasattr(self,'wavegraph'):
@@ -445,20 +428,21 @@ e = p.env
 agent = nnagent(
 e.observation_space,
 e.action_space,
-discount_factor=.993,
-stack_factor=2,
+discount_factor=.99,
+stack_factor=1,
 train_skip_every=1,
 )
 
+noise_level = 2.
 def r(ep):
+    global noise_level
     # agent.render = True
     e = p.env
-    noise_level = 1.
     for i in range(ep):
-        noise_level *= .995
-        noise_level = max(1e-22,noise_level - 1e-4)
+        noise_level *= .99
+        noise_level = max(1e-7,noise_level - 1e-4)
         print('ep',i,'/',ep,'noise_level',noise_level)
-        agent.play(e,realtime=True,max_steps=-1,noise_level=noise_level)
+        agent.play(e,realtime=False,max_steps=-1,noise_level=noise_level)
 
 def test():
     e = p.env
