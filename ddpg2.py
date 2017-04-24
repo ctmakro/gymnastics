@@ -91,6 +91,29 @@ def softmax(x):
     ex = np.exp(x)
     return ex / np.sum(ex, axis=0)
 
+
+import matplotlib.pyplot as plt
+class plotter:
+    def __init__(self):
+        plt.ion()
+
+        self.x = []
+        self.y = []
+        self.fig = plt.figure()
+        self.ax = self.fig.add_subplot(1,1,1)
+
+    def pushy(self,y):
+        self.y.append(y)
+        if len(self.x)>0:
+            self.x.append(self.x[-1]+1)
+        else:
+            self.x.append(0)
+
+    def show(self):
+        self.ax.clear()
+        self.ax.plot(self.x,self.y)
+        plt.draw()
+
 class nnagent(object):
     def __init__(self,
     observation_space,
@@ -100,6 +123,7 @@ class nnagent(object):
     train_skip_every=1,
     ):
         self.rpm = rpm(1000000) # 1M history
+        self.plotter = plotter()
         self.render = True
         self.noise_source = one_fsq_noise()
         self.train_counter = 0
@@ -161,9 +185,12 @@ class nnagent(object):
 
     # a = actor(s) : predict actions given state
     def create_actor_network(self,inputdims,outputdims):
+        # add gaussian noise.
         c = Can()
         c.add(Dense(inputdims,256))
-        c.add(ResDense(256))
+        c.add(Act('relu'))
+        # c.add(Dense(256,128))
+        # c.add(Act('lrelu'))
         c.add(Dense(256,outputdims))
 
         if self.is_continuous:
@@ -180,17 +207,23 @@ class nnagent(object):
         c = Can()
         concat = Lambda(lambda x:tf.concat([x[0],x[1]],axis=1))
         # concat state and action
-        den1 = c.add(Dense(inputdims,128))
-        den2r = c.add(ResDense(128+actiondims))
-        den3 = c.add(Dense(128+actiondims, 1))
+        den1 = c.add(Dense(inputdims,256))
+        den2 = c.add(Dense(256+actiondims,256))
+        den3 = c.add(Dense(256, 128))
+        den4 = c.add(Dense(128,1))
 
         def call(i):
             state = i[0]
             action = i[1]
             h1 = den1(state)
-            h1 = Act('elu')(h1)
-            h2 = den2r(concat([h1,action]))
-            q = den3(h2)
+            h1 = Act('lrelu')(h1)
+            h2 = den2(concat([h1,action]))
+            h2 = Act('lrelu')(h2)
+
+            h2 = den3(h2)
+            h2 = Act('lrelu')(h2)
+
+            q = den4(h2)
             return q
         c.set_function(call)
         return c
@@ -217,7 +250,7 @@ class nnagent(object):
         # maximize q1_predict -> better actor
 
         # 3. shift the weights (aka target network)
-        tau = tf.Variable(0.001)
+        tau = tf.Variable(1e-3) # original paper: 1e-3. need more stabilization
         aw = self.actor.get_weights()
         atw = self.actor_target.get_weights()
         cw = self.critic.get_weights()
@@ -233,15 +266,18 @@ class nnagent(object):
         q_infer = self.critic([s1,a_infer])
 
         # 5. L2 weight decay on critic
-        decay_c = tf.reduce_mean([tf.reduce_mean(w**2) for w in cw])* 0.004
+        decay_c = tf.reduce_sum([tf.reduce_sum(w**2) for w in cw])* 0.0001
+        # decay_a = tf.reduce_sum([tf.reduce_sum(w**2) for w in aw])* 0.0001
 
         # optimizer on
         # actor is harder to stabilize...
-        opt_actor = tf.train.AdamOptimizer(2e-4)
-        opt_critic = tf.train.AdamOptimizer(1e-3)
+        opt_actor = tf.train.AdamOptimizer(1e-4)
+        opt_critic = tf.train.AdamOptimizer(3e-4)
+        # opt_actor = tf.train.MomentumOptimizer(1e-1,momentum=0.9)
         cstep = opt_critic.minimize(critic_loss+decay_c, var_list=cw)
         astep = opt_actor.minimize(actor_loss, var_list=aw)
 
+        self.feedcounter=0
         def feed(memory):
             [s1d,a1d,r1d,isdoned,s2d] = memory # d suffix means data
             sess = ct.get_session()
@@ -250,8 +286,14 @@ class nnagent(object):
                 feed_dict={
                 s1:s1d,a1:a1d,r1:r1d,isdone:isdoned,s2:s2d,tau:1e-3
                 })
-            # print('closs: {:6.4f} aloss: {:6.4f}'.format(
-            # res[0],res[1]))
+
+            #debug purposes
+            self.feedcounter+=1
+            if self.feedcounter%10==0:
+                print(' '*30, 'closs: {:6.4f} aloss: {:6.4f}'.format(
+                    res[0],res[1]),end='\r')
+
+            # return res[0],res[1] # closs, aloss
 
         def joint_inference(state):
             sess = ct.get_session()
@@ -354,7 +396,7 @@ class nnagent(object):
             # feed into replay memory
             self.feed_one((thisque,action,reward,isdone,nextque)) # s1,a1,r1,isdone,s2
 
-            if self.render==True and (steps%20==0 or realtime==True):
+            if self.render==True and (steps%30==0 or realtime==True):
                 env.render()
             if done :
                 break
@@ -367,6 +409,9 @@ class nnagent(object):
         print('episode done in {} steps in {:.2f} sec, {:.4f} sec/step, got reward :{:.2f}'.format(
         steps,totaltime,totaltime/steps,total_reward
         ))
+
+        self.plotter.pushy(total_reward)
+        self.plotter.show()
         return
 
     # one step of action, given observation
@@ -440,7 +485,7 @@ def r(ep):
     e = p.env
     for i in range(ep):
         noise_level *= .99
-        noise_level = max(1e-7,noise_level - 1e-4)
+        noise_level = max(3e-6, noise_level)
         print('ep',i,'/',ep,'noise_level',noise_level)
         agent.play(e,realtime=False,max_steps=-1,noise_level=noise_level)
 
