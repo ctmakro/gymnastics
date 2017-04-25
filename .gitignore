@@ -1,3 +1,4 @@
 /cart*
 /ex*
 *.pyc
+*.npz

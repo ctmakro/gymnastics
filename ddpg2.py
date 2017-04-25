@@ -125,6 +125,7 @@ class nnagent(object):
         self.rpm = rpm(1000000) # 1M history
         self.plotter = plotter()
         self.render = True
+        self.training = True
         self.noise_source = one_fsq_noise()
         self.train_counter = 0
         self.train_skip_every = train_skip_every
@@ -394,7 +395,8 @@ class nnagent(object):
             nextque = quecopy() # s2
 
             # feed into replay memory
-            self.feed_one((thisque,action,reward,isdone,nextque)) # s1,a1,r1,isdone,s2
+            if self.training == True:
+                self.feed_one((thisque,action,reward,isdone,nextque)) # s1,a1,r1,isdone,s2
 
             if self.render==True and (steps%30==0 or realtime==True):
                 env.render()
@@ -402,7 +404,9 @@ class nnagent(object):
                 break
 
             verbose= 2 if steps==1 else 0
-            self.train(verbose=verbose)
+
+            if self.training == True:
+                self.train(verbose=verbose)
 
         # print('episode done in',steps,'steps',time.time()-timer,'second total reward',total_reward)
         totaltime = time.time()-timer
@@ -447,6 +451,18 @@ class nnagent(object):
         wg = self.wavegraph
         wg.one(waves.reshape((-1,)))
 
+    def save_weights(self):
+        networks = ['actor','critic','actor_target','critic_target']
+        for name in networks:
+            network = getattr(self,name)
+            network.save_weights('ddpg_'+name+'.npz')
+
+    def load_weights(self):
+        networks = ['actor','critic','actor_target','critic_target']
+        for name in networks:
+            network = getattr(self,name)
+            network.load_weights('ddpg_'+name+'.npz')
+
 class playground(object):
     def __init__(self,envname):
         self.envname=envname
@@ -463,33 +479,34 @@ class playground(object):
         self.env.close()
         gym.upload(self.monpath, api_key='sk_ge0PoVXsS6C5ojZ9amTkSA')
 
-# p = playground('LunarLanderContinuous-v2')
-# p = playground('Pendulum-v0')
-# p = playground('MountainCar-v0')BipedalWalker-v2
-p = playground('BipedalWalker-v2')
+if __name__=='__main__':
+    # p = playground('LunarLanderContinuous-v2')
+    # p = playground('Pendulum-v0')
+    # p = playground('MountainCar-v0')BipedalWalker-v2
+    p = playground('BipedalWalker-v2')
 
-e = p.env
-
-agent = nnagent(
-e.observation_space,
-e.action_space,
-discount_factor=.99,
-stack_factor=1,
-train_skip_every=1,
-)
-
-noise_level = 2.
-def r(ep):
-    global noise_level
-    # agent.render = True
     e = p.env
-    for i in range(ep):
-        noise_level *= .99
-        noise_level = max(3e-6, noise_level)
-        print('ep',i,'/',ep,'noise_level',noise_level)
-        agent.play(e,realtime=False,max_steps=-1,noise_level=noise_level)
 
-def test():
-    e = p.env
-    agent.render = True
-    agent.play(e,realtime=True,max_steps=-1,noise_level=1e-11)
+    agent = nnagent(
+    e.observation_space,
+    e.action_space,
+    discount_factor=.99,
+    stack_factor=1,
+    train_skip_every=1,
+    )
+
+    noise_level = 2.
+    def r(ep):
+        global noise_level
+        # agent.render = True
+        e = p.env
+        for i in range(ep):
+            noise_level *= .99
+            noise_level = max(3e-6, noise_level)
+            print('ep',i,'/',ep,'noise_level',noise_level)
+            agent.play(e,realtime=False,max_steps=-1,noise_level=noise_level)
+
+    def test():
+        e = p.env
+        agent.render = True
+        agent.play(e,realtime=True,max_steps=-1,noise_level=1e-11)
