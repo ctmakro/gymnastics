@@ -40,5 +40,3 @@ class rpm(object):
             if len(k.shape)==1: k.shape+=(1,)
             res.append(k)
         return res
-
-class rpm2()
