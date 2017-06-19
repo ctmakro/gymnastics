@@ -257,9 +257,11 @@ class nnagent(object):
         cw = self.critic.get_weights()
         ctw = self.critic_target.get_weights()
 
-        shift1 = [tf.assign(atw[i], aw[i]*tau + atw[i]*(1-tau))
+        one_m_tau = 1-tau
+
+        shift1 = [tf.assign(atw[i], aw[i]*tau + atw[i]*(one_m_tau))
             for i,_ in enumerate(aw)]
-        shift2 = [tf.assign(ctw[i], cw[i]*tau + ctw[i]*(1-tau))
+        shift2 = [tf.assign(ctw[i], cw[i]*tau + ctw[i]*(one_m_tau))
             for i,_ in enumerate(cw)]
 
         # 4. inference

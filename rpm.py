@@ -1,4 +1,4 @@
-from collections import deque
+# from collections import deque
 import numpy as np
 import random
 
@@ -7,20 +7,15 @@ class rpm(object):
     #replay memory
     def __init__(self,buffer_size):
         self.buffer_size = buffer_size
-        self.count = 0
-        self.buffer = deque()
+        self.buffer = []
 
-    def add(self, tup):
-        experience = tup
-        if self.count < self.buffer_size:
-            self.buffer.append(experience)
-            self.count += 1
-        else:
+    def add(self, obj):
+        if self.size() >= self.buffer_size:
             self.buffer.popleft()
-            self.buffer.append(experience)
+        self.buffer.append(obj)
 
     def size(self):
-        return self.count
+        return len(self.buffer)
 
     def sample_batch(self, batch_size):
         '''
@@ -30,17 +25,20 @@ class rpm(object):
         Generally, you'll want to wait until the buffer has at least
         batch_size elements before beginning to sample from it.
         '''
-        batch = []
 
-        if self.count < batch_size:
-            batch = random.sample(self.buffer, self.count)
+        if self.size() < batch_size:
+            batch = random.sample(self.buffer, self.size())
         else:
             batch = random.sample(self.buffer, batch_size)
 
         item_count = len(batch[0])
         res = []
         for i in range(item_count):
-            k = np.array([item[i] for item in batch])
-            if len(k.shape)==1: k = k.reshape(k.shape+(1,))
+            # k = np.array([item[i] for item in batch])
+            k = np.stack((item[i] for item in batch),axis=0)
+            # if len(k.shape)==1: k = k.reshape(k.shape+(1,))
+            if len(k.shape)==1: k.shape+=(1,)
             res.append(k)
         return res
+
+class rpm2()
