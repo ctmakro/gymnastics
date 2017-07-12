@@ -41,7 +41,7 @@ class CartPoleVREPEnv(gym.Env):
         cartpos = self.cart.get_position()
         masspos = self.mass.get_position()
         cartvel,cart_angvel = self.cart.get_velocity()
-        massvel,mass_angvel = self.cart.get_velocity()
+        massvel,mass_angvel = self.mass.get_velocity()
 
         self.observation = np.array([
             cartpos[0],cartvel[0],
