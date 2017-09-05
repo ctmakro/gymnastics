@@ -55,19 +55,12 @@ class DiagGaussian(Can):
 class DiagGaussianParametrizer(Can):
     def __init__(self,din,dout):
         super().__init__()
-        # initially mean and logstd should all read zero.
-        self.mean_layer = self.add(Dense(din,dout))
-        self.logstd_layer = self.add(Dense(din,dout))
-        self.logstd_layer.b = self.logstd_layer.make_bias([dout], mean=2.0) # stddev of e^2
-        self.logstd_layer.use_bias = True
-        # self.Wmean = self.make_weight([din,dout],mean=0,stddev=1e-2)
-        # self.Bmean = self.make_bias([din,dout])
-        # self.Wlogstd = self.make_weight([din,dout],mean=0,stddev=np.sqrt(2/num_inputs))
-        # self.Blogstd = self.make_bias([din,dout])
+        # output amplitude is discounted to center the distributions on start.
+        self.mean_layer = self.add(Dense(din,dout,stddev=1e-2))
+        self.logstd_layer = self.add(Dense(din,dout,stddev=1e-2,mean=2.))
+        # the output will have a logstd of 2, or std of e^2. Good for exploration
 
     def __call__(self,x):
-        # mean = tf.matmul(x,self.Wmean) + self.Bmean
-        # logstd = tf.matmul(x,self.Wlogstd) + self.Blogstd
         mean, logstd = self.mean_layer(x), self.logstd_layer(x)
         return [mean, logstd]
 
@@ -86,10 +79,9 @@ class Policy():
 
         # the part of actor network before final gaussian output
         c = Can()
-        c.add(Lambda(lambda x:x/10))
-        c.add(Dense(ob_dims, 64))
+        c.add(Dense(ob_dims, 64, stddev=1))
         c.add(rect)
-        c.add(Dense(64, 64))
+        c.add(Dense(64, 64, stddev=1))
         c.add(rect)
         c.add(DiagGaussianParametrizer(64, ac_dims))
         c.chain()
@@ -115,12 +107,11 @@ class Policy():
 
         # 3. build our value network
         c = Can()
-        c.add(Lambda(lambda x:x/10))
-        c.add(Dense(ob_dims, 64))
+        c.add(Dense(ob_dims, 64, stddev=1))
         c.add(rect)
-        c.add(Dense(64, 64))
+        c.add(Dense(64, 64, stddev=1))
         c.add(rect)
-        c.add(Dense(64, 1))
+        c.add(Dense(64, 1, stddev=1))
         c.chain()
         self.critic = c
 
@@ -132,7 +123,7 @@ class Policy():
         # given observation, generate action
         def _act(state, stochastic=True):
             # assume state is ndarray of shape [dims]
-            state = state.copy()
+            state = state.view()
             state.shape = (1,) + state.shape
 
             sess = get_session()
@@ -151,13 +142,19 @@ class Policy():
 
 # our PPO agent.
 class ppo_agent:
-    def __init__(self, ob_space, ac_space, horizon=2048, gamma=0.99, lam=0.95):
+    def __init__(
+        self, ob_space, ac_space,
+        horizon=2048,
+        gamma=0.99, lam=0.95,
+        train_epochs=10, batch_size=64,
+        ):
         self.current_policy = Policy(ob_space, ac_space)
         self.old_policy = Policy(ob_space, ac_space)
         self.current_policy.actor.summary()
         self.current_policy.critic.summary()
 
         self.gamma, self.lam, self.horizon = gamma, lam, horizon
+        self.train_epochs, self.batch_size = train_epochs, batch_size
 
         self.train_for_one_step, self.assign_old_eq_new = self.train_gen()
 
@@ -176,7 +173,7 @@ class ppo_agent:
         adv_target = ph([None]) # Target advantage function, estimated
         ret = ph([None]) # Empirical return, estimated
 
-        # ratio = log(P_now(state, action)) / log(P_old(state, action))
+        # ratio = P_now(state, action) / P_old(state, action)
         ratio = tf.exp(policy.logp([obs, actions]) - old_policy.logp([obs, actions]))
 
         # surr1 -> policy gradient
@@ -193,16 +190,17 @@ class ppo_agent:
         value_prediction = policy.critic(obs)
         value_loss = tf.reduce_mean((value_prediction-ret)**2)
 
-        # ...
-        opt = tf.train.AdamOptimizer(3e-4)
+        # learn the actor more slowly to maximize exploration
+        opt_a = tf.train.AdamOptimizer(1e-5)
+        opt_c = tf.train.AdamOptimizer(1e-4)
 
-        # sum of two losses used in original implementation
-        total_loss = policy_surrogate + value_loss
-        trainstep = opt.minimize(total_loss, var_list=policy.actor.get_weights()+policy.critic.get_weights())
+        # # sum of two losses used in original implementation
+        # total_loss = policy_surrogate + value_loss
+        # combined_trainstep = opt.minimize(total_loss, var_list=policy.actor.get_weights()+policy.critic.get_weights())
 
         # I decided to go with the following instead
-        actor_trainstep = opt.minimize(policy_surrogate, var_list=policy.actor.get_weights())
-        critic_trainstep = opt.minimize(value_loss, var_list=policy.critic.get_weights())
+        actor_trainstep = opt_a.minimize(policy_surrogate, var_list=policy.actor.get_weights())
+        critic_trainstep = opt_c.minimize(value_loss, var_list=policy.critic.get_weights())
 
         # update current policy, given sampled trajectories.
         def train_for_one_step(_obs, _actions, _adv_target, _ret):
@@ -210,8 +208,8 @@ class ppo_agent:
             res = get_session().run(
                 [ # perform training and collect losses in one go
                     policy_surrogate, value_loss,
-                    # actor_trainstep, critic_trainstep,
-                    trainstep,
+                    actor_trainstep, critic_trainstep,
+                    # combined_trainstep,
                 ],
                 feed_dict = {
                     obs:_obs, actions:_actions,
@@ -254,7 +252,7 @@ class ppo_agent:
         steps = 0
         sum_reward = 0
         while 1:
-            print('collecting episode {}'.format(ep+1), end='\r')
+            # print('collecting episode {}'.format(ep+1), end='\r')
 
             episode_total_reward = 0
             episode_length = 0
@@ -272,7 +270,7 @@ class ppo_agent:
                 collected['s1'].append(ob)
                 collected['vp1'].append(val_pred)
                 collected['a1'].append(sto_action)
-                collected['r1'].append(reward)
+                collected['r1'].append(reward/16) # downscaled reward
                 collected['done'].append(1 if done else 0)
                 # collected['s2'].append(new_ob)
 
@@ -284,7 +282,7 @@ class ppo_agent:
                 steps+=1
 
                 # if episode is done, either natually or forcifully
-                if done or episode_length >= 300:
+                if done or episode_length >= 500:
                     collected['done'][-1] = 1
                     print('episode {} done in {} steps, total reward:{}'.format(
                         ep+1, episode_length, episode_total_reward,
@@ -302,7 +300,7 @@ class ppo_agent:
         print('mean reward per episode:{}'.format(sum_reward/(ep+1)))
         return collected
 
-    # compute target value (which we are trying to make our critic to fit) using TD(lambda) estimator, and advantage with GAE(lambda), from collected trajectories.
+    # estimate target value (which we are trying to make our critic to fit) via TD(lambda), and advantage using GAE(lambda), from collected trajectories.
     def append_vtarg_and_adv(self, collected):
         # you know what these mean, don't you?
         gamma = self.gamma # 0.99
@@ -361,10 +359,12 @@ class ppo_agent:
         atarg = (atarg - atarg.mean())/atarg.std()
 
         # 4. train for some epochs
-        train_epochs = 10
-        batch_size = 64
+        train_epochs = self.train_epochs # 30
+        batch_size = self.batch_size # 512
+        import time
+        lasttimestamp = time.time()
+
         for e in range(train_epochs):
-            # print('training epoch {}/{}...'.format(e+1,train_epochs))
             for j in range(0, len(ob)-batch_size+1, batch_size): # ignore tail
                 res = self.train_for_one_step(
                     ob[j:j+batch_size],
@@ -373,8 +373,10 @@ class ppo_agent:
                     tdlamret[j:j+batch_size],
                 )
                 ploss, vloss = res[0],res[1]
-                print(' '*30, 'ploss: {:6.4f} vloss: {:6.4f}'.format(
-                    ploss, vloss),end='\r')
+                if time.time() - lasttimestamp > 0.2:
+                    lasttimestamp = time.time()
+                    print(' '*30, 'ploss: {:6.4f} vloss: {:6.4f}'.format(
+                        ploss, vloss),end='\r')
         print('iteration done.')
 
 if __name__ == '__main__':
@@ -382,7 +384,15 @@ if __name__ == '__main__':
     envname = 'Pendulum-v0'
     env = gym.make(envname)
 
-    agent = ppo_agent(env.observation_space, env.action_space, horizon=2048, gamma=0.995)
+    agent = ppo_agent(
+        env.observation_space, env.action_space,
+        horizon=4096,
+        gamma=0.995,
+        lam=0.95,
+        train_epochs=20,
+        batch_size=256,
+    )
+
     get_session().run(gvi()) # init global variables for TF
 
     def r(iters=2):
@@ -390,4 +400,4 @@ if __name__ == '__main__':
         for i in range(iters):
             print('optimization iteration {}/{}'.format(i+1, iters))
             agent.iterate_once(env)
-    r(3)
+    r(50)
