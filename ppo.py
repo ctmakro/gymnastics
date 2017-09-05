@@ -79,9 +79,9 @@ class Policy():
 
         # the part of actor network before final gaussian output
         c = Can()
-        c.add(Dense(ob_dims, 64, stddev=1))
+        c.add(Dense(ob_dims, 256, stddev=1))
         c.add(rect)
-        c.add(Dense(64, 64, stddev=1))
+        c.add(Dense(256, 64, stddev=1))
         c.add(rect)
         c.add(DiagGaussianParametrizer(64, ac_dims))
         c.chain()
@@ -107,9 +107,9 @@ class Policy():
 
         # 3. build our value network
         c = Can()
-        c.add(Dense(ob_dims, 64, stddev=1))
+        c.add(Dense(ob_dims, 256, stddev=1))
         c.add(rect)
-        c.add(Dense(64, 64, stddev=1))
+        c.add(Dense(256, 64, stddev=1))
         c.add(rect)
         c.add(Dense(64, 1, stddev=1))
         c.chain()
@@ -191,8 +191,8 @@ class ppo_agent:
         value_loss = tf.reduce_mean((value_prediction-ret)**2)
 
         # learn the actor more slowly to maximize exploration
-        opt_a = tf.train.AdamOptimizer(1e-5)
-        opt_c = tf.train.AdamOptimizer(1e-4)
+        opt_a = tf.train.AdamOptimizer(1e-4)
+        opt_c = tf.train.AdamOptimizer(3e-4)
 
         # # sum of two losses used in original implementation
         # total_loss = policy_surrogate + value_loss
@@ -270,7 +270,7 @@ class ppo_agent:
                 collected['s1'].append(ob)
                 collected['vp1'].append(val_pred)
                 collected['a1'].append(sto_action)
-                collected['r1'].append(reward/16) # downscaled reward
+                collected['r1'].append(reward) # downscaled reward
                 collected['done'].append(1 if done else 0)
                 # collected['s2'].append(new_ob)
 
@@ -282,7 +282,7 @@ class ppo_agent:
                 steps+=1
 
                 # if episode is done, either natually or forcifully
-                if done or episode_length >= 500:
+                if done or episode_length >= 1000:
                     collected['done'][-1] = 1
                     print('episode {} done in {} steps, total reward:{}'.format(
                         ep+1, episode_length, episode_total_reward,
@@ -382,15 +382,16 @@ class ppo_agent:
 if __name__ == '__main__':
     # get swingy
     envname = 'Pendulum-v0'
+    envname = 'BipedalWalker-v2'
     env = gym.make(envname)
 
     agent = ppo_agent(
         env.observation_space, env.action_space,
-        horizon=4096,
+        horizon=8192,
         gamma=0.995,
-        lam=0.95,
+        lam=0.98,
         train_epochs=20,
-        batch_size=256,
+        batch_size=128,
     )
 
     get_session().run(gvi()) # init global variables for TF
