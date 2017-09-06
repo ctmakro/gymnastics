@@ -23,7 +23,7 @@ from gaussian import lowpassgaussian as lpgs
 # Knowledge of probabilistics is required to read and comprehend following code.
 
 # DiagGaussian layer
-# sample from a diagonal gaussian distribution given input mean and logstd
+# a diagonal gaussian distribution parametrized with mean and logstd
 # original version is in baselines/common/distributions.py
 class DiagGaussian(Can):
     # -log(P(x)) given P and x
@@ -44,13 +44,10 @@ class DiagGaussian(Can):
     def entropy(self):
         raise NotImplementedError('bored')
 
-    # def sample(self): # sampling from
-    #     return tf.random_normal(tf.shape(self.mean), mean=self.mean, stddev=self.std)
-
     def __call__(self, x):
         [self.mean, self.logstd] = x
         self.std = tf.exp(self.logstd)
-        return self.mean, self.std
+        return [self.mean, self.std]
         # stochastically and deterministically generated actions respectively.
 
 # this is a dual-output dense layer as it outputs the mean and logstd of a diagonal gaussian distribution.
@@ -59,9 +56,8 @@ class DiagGaussianParametrizer(Can):
     def __init__(self,din,dout):
         super().__init__()
         # output amplitude is discounted to center the distributions on start.
-        self.mean_layer = self.add(Dense(din,dout,stddev=1e-2))
-        self.logstd_layer = self.add(Dense(din,dout,stddev=1e-2,mean=2.))
-        # the output will have a logstd of 2, or std of e^2. Good for exploration
+        self.mean_layer = self.add(Dense(din,dout,stddev=1.))
+        self.logstd_layer = self.add(Dense(din,dout,stddev=1.))
 
     def __call__(self,x):
         mean, logstd = self.mean_layer(x), self.logstd_layer(x)
@@ -79,9 +75,9 @@ class Policy(Can):
 
         # 2. build our action network
         rect = Act('tanh')
-        # apparently John doesn't give a fuck about ReLUs. Change above line as you wish.
+        # apparently John doesn't give a fuck about ReLUs. Change the rectifiers as you wish.
         rect = Act('lrelu',alpha=0.2)
-        magic = 1/(0.5+0.5*0.2)
+        magic = 1/(0.5+0.5*0.2) # stddev factor for lrelu(0.2)
 
         c = Can()
         c.add(Dense(ob_dims, 128, stddev=magic))
@@ -107,6 +103,26 @@ class Policy(Can):
         c.chain()
         self.critic = self.add(c)
 
+# don't discard trajectories after one iteration;
+# keep them around in the buffer to increase sample efficiency.
+class traj_buffer:
+    def __init__(self, length):
+        self.maxlen = length
+        self.buf = []
+
+    def push(self, collected):
+        # collected is a tuple of (s1,a1...)
+        self.buf.append(collected)
+        while len(self.buf)>self.maxlen:
+            self.buf.pop(0) # remove first
+
+    def get_all(self):
+        collected = [[] for i in range(len(self.buf[0]))]
+        for c in self.buf:
+            for i in range(len(c)):
+                collected[i] += c[i]
+        return collected
+
 # our PPO agent.
 class ppo_agent:
     def __init__(
@@ -114,6 +130,7 @@ class ppo_agent:
         horizon=2048,
         gamma=0.99, lam=0.95,
         train_epochs=10, batch_size=64,
+        buffer_length=10,
         ):
         self.current_policy = Policy(ob_space, ac_space)
         self.old_policy = Policy(ob_space, ac_space)
@@ -122,20 +139,22 @@ class ppo_agent:
 
         self.gamma, self.lam, self.horizon = gamma, lam, horizon
         self.train_epochs, self.batch_size = train_epochs, batch_size
+        self.traj_buffer = traj_buffer(buffer_length)
 
-        self.act, self.train_for_one_step, self.assign_old_eq_new = self.build_functions()
+        self.act, self.predict_value, self.train_for_one_step, self.assign_old_eq_new = self.build_functions()
 
+        # logging of episodic reward.
         from plotter import interprocess_plotter as plotter
         self.plotter = plotter(2)
 
-        # logging of actions. comment out if you dont have CV2
+        # logging of actions. comment out if you don't have opencv
         if not hasattr(self,'wavegraph'):
             from winfrey import wavegraph
             # num_waves = self.outputdims*2+1
             num_waves = self.current_policy.ac_dims*2+1
             def rn():
                 r = np.random.uniform()
-                return 0.2+r*0.4
+                return 0.3+r*0.4
             colors = []
             for i in range(num_waves-1):
                 color = [rn(),rn(),rn()]
@@ -161,7 +180,7 @@ class ppo_agent:
         adv_target = ph([None]) # Target advantage function, estimated
         ret = ph([None]) # Empirical return, estimated
 
-        # run observation thru the networks
+        # feed observation thru the networks
         policy_mean, policy_std = policy.actor(states)
         policy_val_pred = policy.critic(states)
 
@@ -169,7 +188,7 @@ class ppo_agent:
         old_policy_val_pred = old_policy.critic(states)
 
         # ratio = P_now(state, action) / P_old(state, action)
-        # state is previously connected so we will pass in actions only
+        # state was previously fed so we will pass in actions only
         ratio = tf.exp(policy.dg.logp(actions) - old_policy.dg.logp(actions))
 
         # surr1 -> policy gradient
@@ -186,15 +205,16 @@ class ppo_agent:
         value_prediction = policy_val_pred
         value_loss = tf.reduce_mean((value_prediction-ret)**2)
 
-        # learn the actor more slowly to maximize exploration
-        opt_a = tf.train.AdamOptimizer(1e-4)
+        # optimizer
+        opt = tf.train.AdamOptimizer(1e-3)
+        opt_a = tf.train.AdamOptimizer(1e-3)
         opt_c = tf.train.AdamOptimizer(1e-3)
 
-        # # sum of two losses used in original implementation
-        # total_loss = policy_surrogate + value_loss
-        # combined_trainstep = opt.minimize(total_loss, var_list=policy.actor.get_weights()+policy.critic.get_weights())
+        # sum of two losses used in original implementation
+        total_loss = policy_surrogate + value_loss
+        combined_trainstep = opt.minimize(total_loss, var_list=policy.actor.get_weights()+policy.critic.get_weights())
 
-        # I decided to go with the following instead
+        # If you want different learning rate, go with the following
         actor_trainstep = opt_a.minimize(policy_surrogate, var_list=policy.actor.get_weights())
         critic_trainstep = opt_c.minimize(value_loss, var_list=policy.critic.get_weights())
 
@@ -207,28 +227,34 @@ class ppo_agent:
             res = get_session().run([
                 policy_mean,
                 policy_std,
-                value_prediction
+                value_prediction,
             ], feed_dict={states: state})
 
             pm, ps, vp = res
             # [batch, dims] [batch, dims] [batch, 1]
             pm,ps,vp = pm[0], ps[0], vp[0,0]
 
-            # logging. comment out if you dont have CV2
+            # logging. comment out if you don't have opencv
             disp_mean = pm*5. + np.arange(policy.ac_dims)*12 + 30
             disp_std = pm*5. - np.arange(policy.ac_dims)*12 - 30
             self.loggraph(np.hstack([disp_mean, disp_std, vp]))
 
             return pm,ps,vp
 
-        # update current policy, given sampled trajectories.
+        # 2. value prediction
+        def predict_value(_states):
+            # assume _states is ndarray of shape [batch, dims]
+            res = get_session().run([value_prediction],feed_dict={states:_states})
+            return res[0]
+
+        # 3. trainer. update current policy given processed trajectories.
         def train_for_one_step(_states, _actions, _adv_target, _ret):
             # [print(a.shape) for a in [_obs,_actions,_adv_target,_ret]]
             res = get_session().run(
                 [ # perform training and collect losses in one go
                     policy_surrogate, value_loss,
-                    actor_trainstep, critic_trainstep,
-                    # combined_trainstep,
+                    # actor_trainstep, critic_trainstep,
+                    combined_trainstep,
                 ],
                 feed_dict = {
                     states:_states, actions:_actions,
@@ -238,32 +264,26 @@ class ppo_agent:
             # res[0] is ploss, res[1] is val_loss
             return res
 
-        # assign old_policy's weights equal to current policy.
+        # 4. assigner. assign old_policy's weights with current policy's weights.
         assign_ops = [tf.assign(o,n) for o,n in zip(old_policy.get_weights(), policy.get_weights())]
         print('total of {} weights to assign from new to old'.format(len(assign_ops)))
         def assign_old_eq_new():
             get_session().run([assign_ops])
 
-        return act, train_for_one_step, assign_old_eq_new
+        return act, predict_value, train_for_one_step, assign_old_eq_new
 
     # run a bunch of episodes with current_policy on env and collect some trajectories.
     def collect_trajectories(self, env):
         policy = self.current_policy
+        # minimum length we are going to collect
         horizon = self.horizon
         print('collecting trajectory...')
 
         # things we have to collect
-        collected = {
-            's1':[], # observations before action
-            'vp1':[], # value function prediction, given s1
-            'a1':[], # action taken
-            'r1':[], # reward received
-            'done':[], # is the episode done after a1
-            # 's2':[], # next observation
-        }
-
-        # minimum length we are going to collect
-        # horizon = 2048
+        s1 = [] # observations before action
+        a1 = [] # action taken
+        r1 = [] # reward received
+        _done = [] # is the episode done after a1
 
         # counters
         ep = 0
@@ -278,8 +298,6 @@ class ppo_agent:
             return np.array([n.sample() for n in ns], dtype='float32')
 
         while 1:
-            # print('collecting episode {}'.format(ep+1), end='\r')
-
             episode_total_reward = 0
             episode_length = 0
 
@@ -294,12 +312,10 @@ class ppo_agent:
                 new_ob, reward, done, info = env.step(sto_action)
 
                 # append data into collection
-                collected['s1'].append(ob)
-                collected['vp1'].append(val_pred)
-                collected['a1'].append(sto_action)
-                collected['r1'].append(reward) # downscaled reward
-                collected['done'].append(1 if done else 0)
-                # collected['s2'].append(new_ob)
+                s1.append(ob)
+                a1.append(sto_action)
+                r1.append(reward)
+                _done.append(1 if done else 0)
 
                 ob = new_ob # assign new_ob to prev ob
 
@@ -310,7 +326,7 @@ class ppo_agent:
 
                 # if episode is done, either natually or forcifully
                 if done or episode_length >= 1000:
-                    collected['done'][-1] = 1
+                    _done[-1] = 1
                     print('episode {} done in {} steps, total reward:{}'.format(
                         ep+1, episode_length, episode_total_reward,
                     ))
@@ -325,7 +341,7 @@ class ppo_agent:
                 ep+=1
 
         print('mean reward per episode:{}'.format(sum_reward/(ep+1)))
-        return collected
+        return s1,a1,r1,_done
 
     # estimate target value (which we are trying to make our critic to fit) via TD(lambda), and advantage using GAE(lambda), from collected trajectories.
     def append_vtarg_and_adv(self, collected):
@@ -333,12 +349,8 @@ class ppo_agent:
         gamma = self.gamma # 0.99
         lam = self.lam # 0.95
 
-        s1 = collected['s1']
-        vp1 = collected['vp1']
-        a1 = collected['a1']
-        r1 = collected['r1']
-        done = collected['done']
-        # s2 = collected['s2']
+        s1,a1,r1,done = collected
+        vp1 = self.predict_value(s1)
 
         T = len(s1)
         advantage = [None]*T
@@ -351,8 +363,8 @@ class ppo_agent:
             advantage[t] = delta + gamma * lam * (1-done[t]) * last_adv
             last_adv = advantage[t]
 
-        collected['advantage'] = advantage
-        collected['tdlamret'] = [a+v for a,v in zip(advantage, vp1)]
+        tdlamret = [a+v for a,v in zip(advantage, vp1)]
+        return s1,a1,r1,done, advantage,tdlamret
 
     # perform one policy iteration
     def iterate_once(self, env):
@@ -363,40 +375,50 @@ class ppo_agent:
         # 1. collect trajectories w/ current policy
         collected = self.collect_trajectories(env)
 
-        # 2. estimate value target and advantage from collected trajectories
-        self.append_vtarg_and_adv(collected)
+        # 2. push the trajectories into buffer
+        self.traj_buffer.push(collected)
 
-        # 3. data processing
+        # 3. load historic trajectories from buffer
+        collected = self.traj_buffer.get_all()
+
+        # 4. estimate value target and advantage with current critic, from loaded trajectories
+        collected = self.append_vtarg_and_adv(collected)
+        s1,a1,r1,done,advantage,tdlamret = collected
+
+        # 5. data processing
         # shuffling
-        indices = np.arange(len(collected['s1']))
+        indices = np.arange(len(collected[0]))
         np.random.shuffle(indices)
 
         # numpyization
-        ob, ac, atarg, tdlamret = [
-            np.take(np.array(collected[k]).astype('float32'), indices, axis=0)
-            for k in ['s1', 'a1', 'advantage', 'tdlamret']
+        s1, a1, advantage, tdlamret = [
+            np.take(np.array(k).astype('float32'), indices, axis=0)
+            for k in [s1, a1, advantage, tdlamret]
         ]
 
         # expand dimension for minibatch training
-        for nd in [ob,ac,atarg,tdlamret]:
+        for nd in [s1,a1,advantage,tdlamret]:
             if nd.ndim == 1:
                 nd.shape += (1,)
 
         # standarize/normalize
-        atarg = (atarg - atarg.mean())/atarg.std()
+        advantage = (advantage - advantage.mean())/advantage.std()
 
-        # 4. train for some epochs
+        # 6. train for some epochs
         train_epochs = self.train_epochs # 30
         batch_size = self.batch_size # 512
+        data_length = len(s1)
         import time
         lasttimestamp = time.time()
 
+        print('training network on {} datapoints'.format(data_length))
         for e in range(train_epochs):
-            for j in range(0, len(ob)-batch_size+1, batch_size): # ignore tail
+            for j in range(0, data_length-batch_size+1, batch_size):
+                # ignore tail
                 res = self.train_for_one_step(
-                    ob[j:j+batch_size],
-                    ac[j:j+batch_size],
-                    atarg[j:j+batch_size],
+                    s1[j:j+batch_size],
+                    a1[j:j+batch_size],
+                    advantage[j:j+batch_size],
                     tdlamret[j:j+batch_size],
                 )
                 ploss, vloss = res[0],res[1]
@@ -414,10 +436,10 @@ if __name__ == '__main__':
 
     agent = ppo_agent(
         env.observation_space, env.action_space,
-        horizon=4096,
+        horizon=1024,
         gamma=0.99,
         lam=0.95,
-        train_epochs=30,
+        train_epochs=20,
         batch_size=128,
     )
 
