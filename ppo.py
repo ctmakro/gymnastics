@@ -7,6 +7,7 @@
 # terminology
 # ob, obs, input, observation, state, s1 : observation in RL
 # ac, action, a1, output : action in RL
+# vp, vf, val_pred, value_prediction : value function predicted by critic
 # reward, return, ret, r1, tdlamret : (per step / expected future) reward in RL
 # adv, advantage, adv_target, atarg : advantage (estimated / target) in RL
 
@@ -143,6 +144,15 @@ class ppo_agent:
 
         self.act, self.predict_value, self.train_for_one_step, self.assign_old_eq_new = self.build_functions()
 
+        low, high = ac_space.low, ac_space.high
+        self.action_bias = (high + low)/2.
+        self.action_multiplier = high - self.action_bias
+
+        # limit action into the range specified by environment.
+        def action_limiter(action): # assume input mean 0 std 1
+            return np.tanh(action) * self.action_multiplier + self.action_bias
+        self.action_limiter = action_limiter
+
         # logging of episodic reward.
         from plotter import interprocess_plotter as plotter
         self.plotter = plotter(2)
@@ -160,7 +170,7 @@ class ppo_agent:
                 color = [rn(),rn(),rn()]
                 colors.append(color)
             colors.append([0.2,0.5,0.9])
-            self.wavegraph = wavegraph(num_waves,'ac_mean/ac_std/vf',np.array(colors))
+            self.wavegraph = wavegraph(num_waves,'ac_mean/ac_sto/vf',np.array(colors))
 
             def loggraph(waves):
                 wg = self.wavegraph
@@ -206,13 +216,13 @@ class ppo_agent:
         value_loss = tf.reduce_mean((value_prediction-ret)**2)
 
         # optimizer
-        opt = tf.train.AdamOptimizer(1e-3)
+        opt = tf.train.AdamOptimizer(1e-4)
         opt_a = tf.train.AdamOptimizer(1e-3)
         opt_c = tf.train.AdamOptimizer(1e-3)
 
         # sum of two losses used in original implementation
         total_loss = policy_surrogate + value_loss
-        combined_trainstep = opt.minimize(total_loss, var_list=policy.actor.get_weights()+policy.critic.get_weights())
+        combined_trainstep = opt.minimize(total_loss, var_list=policy.get_weights())
 
         # If you want different learning rate, go with the following
         actor_trainstep = opt_a.minimize(policy_surrogate, var_list=policy.actor.get_weights())
@@ -233,12 +243,6 @@ class ppo_agent:
             pm, ps, vp = res
             # [batch, dims] [batch, dims] [batch, 1]
             pm,ps,vp = pm[0], ps[0], vp[0,0]
-
-            # logging. comment out if you don't have opencv
-            disp_mean = pm*5. + np.arange(policy.ac_dims)*12 + 30
-            disp_std = pm*5. - np.arange(policy.ac_dims)*12 - 30
-            self.loggraph(np.hstack([disp_mean, disp_std, vp]))
-
             return pm,ps,vp
 
         # 2. value prediction
@@ -307,9 +311,17 @@ class ppo_agent:
                 # sample action from given policy
                 mean, std, val_pred = self.act(ob)
                 sto_action = noise_sample() * std + mean
+                sto_limited = self.action_limiter(sto_action)
+
+                # logging actions. comment out if you don't have opencv
+                if True:
+                    mean_limited = self.action_limiter(mean)
+                    disp_mean = mean_limited*5. + np.arange(policy.ac_dims)*12 + 30
+                    disp_sto = sto_limited*5. - np.arange(policy.ac_dims)*12 - 30
+                    self.loggraph(np.hstack([disp_mean, disp_sto, val_pred]))
 
                 # step environment with action and obtain reward
-                new_ob, reward, done, info = env.step(sto_action)
+                new_ob, reward, done, info = env.step(sto_limited)
 
                 # append data into collection
                 s1.append(ob)
@@ -439,8 +451,9 @@ if __name__ == '__main__':
         horizon=1024,
         gamma=0.99,
         lam=0.95,
-        train_epochs=20,
+        train_epochs=10,
         batch_size=128,
+        buffer_length=15,
     )
 
     get_session().run(gvi()) # init global variables for TF
@@ -450,4 +463,4 @@ if __name__ == '__main__':
         for i in range(iters):
             print('optimization iteration {}/{}'.format(i+1, iters))
             agent.iterate_once(env)
-    r(50)
+    r(250)
