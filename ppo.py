@@ -141,7 +141,7 @@ class ppo_agent:
                 color = [rn(),rn(),rn()]
                 colors.append(color)
             colors.append([0.2,0.5,0.9])
-            self.wavegraph = wavegraph(num_waves,'ac_mean/ac_taken/value',np.array(colors))
+            self.wavegraph = wavegraph(num_waves,'ac_mean/ac_std/vf',np.array(colors))
 
             def loggraph(waves):
                 wg = self.wavegraph
