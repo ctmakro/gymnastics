@@ -47,10 +47,12 @@ def remote_wavegraph_callback(conn):
                     dlq = np.floor(-self.lastq+imgh/2).astype('int32')
 
                     for i,k in enumerate(dq):
-                        if dq[i]+1>dlq[i]: dq[i],dlq[i] = dlq[i],dq[i]
-                        if dq[i]==dlq[i]: dlq[i]+=1
+                        mi = min(dq[i], dlq[i])
+                        ma = max(dq[i], dlq[i])
 
-                        im[dq[i]:dlq[i],cursor] += (1.5/(dlq[i]-dq[i]))**0.4 * self.colors[i]
+                        if mi==ma: ma+=1
+
+                        im[mi:ma,cursor] += (1.5/((ma-mi)))**0.4 * self.colors[i]
 
                     self.lastq = q
 
