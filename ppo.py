@@ -83,9 +83,9 @@ class Policy(Can):
         c = Can()
         c.add(Dense(ob_dims, 128, stddev=magic))
         c.add(rect)
-        c.add(Dense(128, 128, stddev=magic))
-        c.add(rect)
         c.add(Dense(128, 64, stddev=magic))
+        c.add(rect)
+        c.add(Dense(64, 64, stddev=magic))
         c.add(rect)
         c.add(DiagGaussianParametrizer(64, ac_dims))
         self.dg = c.add(DiagGaussian())
@@ -96,9 +96,9 @@ class Policy(Can):
         c = Can()
         c.add(Dense(ob_dims, 128, stddev=magic))
         c.add(rect)
-        c.add(Dense(128, 128, stddev=magic))
-        c.add(rect)
         c.add(Dense(128, 64, stddev=magic))
+        c.add(rect)
+        c.add(Dense(64, 64, stddev=magic))
         c.add(rect)
         c.add(Dense(64, 1, stddev=magic))
         c.chain()
@@ -242,6 +242,10 @@ class ppo_agent:
 
             pm, ps, vp = res
             # [batch, dims] [batch, dims] [batch, 1]
+            if np.isnan(np.sum(pm)) or np.isnan(np.sum(ps)) or np.isnan(np.sum(vp)):
+                print(pm,ps,vp)
+                raise Exception('nan found in result')
+
             pm,ps,vp = pm[0], ps[0], vp[0,0]
             return pm,ps,vp
 
@@ -317,7 +321,7 @@ class ppo_agent:
                 if True:
                     mean_limited = self.action_limiter(mean)
                     disp_mean = mean_limited*5. + np.arange(policy.ac_dims)*12 + 30
-                    disp_sto = sto_limited*5. - np.arange(policy.ac_dims)*12 - 30
+                    disp_sto = sto_limited*5. - np.flipud(np.arange(policy.ac_dims))*12 - 30
                     self.loggraph(np.hstack([disp_mean, disp_sto, val_pred]))
 
                 # step environment with action and obtain reward
@@ -414,7 +418,7 @@ class ppo_agent:
                 nd.shape += (1,)
 
         # standarize/normalize
-        advantage = (advantage - advantage.mean())/advantage.std()
+        advantage = (advantage - advantage.mean())/advantage.std() * 10
 
         # 6. train for some epochs
         train_epochs = self.train_epochs # 30
@@ -463,4 +467,4 @@ if __name__ == '__main__':
         for i in range(iters):
             print('optimization iteration {}/{}'.format(i+1, iters))
             agent.iterate_once(env)
-    r(250)
+    # r(250)
