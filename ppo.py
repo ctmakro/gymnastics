@@ -122,6 +122,27 @@ class ppo_agent:
         from plotter import interprocess_plotter as plotter
         self.plotter = plotter(2)
 
+        # logging of actions. comment out if you dont have CV2
+        if not hasattr(self,'wavegraph'):
+            from winfrey import wavegraph
+            # num_waves = self.outputdims*2+1
+            num_waves = self.current_policy.ac_dims*2+1
+            def rn():
+                r = np.random.uniform()
+                return 0.2+r*0.4
+            colors = []
+            for i in range(num_waves-1):
+                color = [rn(),rn(),rn()]
+                colors.append(color)
+            colors.append([0.2,0.5,0.9])
+            self.wavegraph = wavegraph(num_waves,'ac_mean/ac_taken/value',np.array(colors))
+
+            def loggraph(waves):
+                wg = self.wavegraph
+                wg.one(waves.reshape((-1,)))
+
+            self.loggraph = loggraph
+
     # build graph and actions for training with tensorflow.
     def build_functions(self):
         # the 'lrmult' parameter is not implemented.
@@ -185,7 +206,14 @@ class ppo_agent:
 
             pm, ps, vp = res
             # [batch, dims] [batch, dims] [batch, 1]
-            return pm[0], ps[0], vp[0,0]
+            pm,ps,vp = pm[0], ps[0], vp[0,0]
+
+            # logging. comment out if you dont have CV2
+            disp_mean = pm*5. + np.arange(policy.ac_dims)*12 + 30
+            disp_std = pm*5. - np.arange(policy.ac_dims)*12 - 30
+            self.loggraph(np.hstack([disp_mean, disp_std, vp]))
+
+            return pm,ps,vp
 
         # update current policy, given sampled trajectories.
         def train_for_one_step(_states, _actions, _adv_target, _ret):
