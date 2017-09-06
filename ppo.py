@@ -80,11 +80,15 @@ class Policy(Can):
         # 2. build our action network
         rect = Act('tanh')
         # apparently John doesn't give a fuck about ReLUs. Change above line as you wish.
+        rect = Act('lrelu',alpha=0.2)
+        magic = 1/(0.5+0.5*0.2)
 
         c = Can()
-        c.add(Dense(ob_dims, 256, stddev=1))
+        c.add(Dense(ob_dims, 128, stddev=magic))
         c.add(rect)
-        c.add(Dense(256, 64, stddev=1))
+        c.add(Dense(128, 128, stddev=magic))
+        c.add(rect)
+        c.add(Dense(128, 64, stddev=magic))
         c.add(rect)
         c.add(DiagGaussianParametrizer(64, ac_dims))
         self.dg = c.add(DiagGaussian())
@@ -93,11 +97,13 @@ class Policy(Can):
 
         # 3. build our value network
         c = Can()
-        c.add(Dense(ob_dims, 256, stddev=1))
+        c.add(Dense(ob_dims, 128, stddev=magic))
         c.add(rect)
-        c.add(Dense(256, 64, stddev=1))
+        c.add(Dense(128, 128, stddev=magic))
         c.add(rect)
-        c.add(Dense(64, 1, stddev=1))
+        c.add(Dense(128, 64, stddev=magic))
+        c.add(rect)
+        c.add(Dense(64, 1, stddev=magic))
         c.chain()
         self.critic = self.add(c)
 
@@ -182,7 +188,7 @@ class ppo_agent:
 
         # learn the actor more slowly to maximize exploration
         opt_a = tf.train.AdamOptimizer(1e-4)
-        opt_c = tf.train.AdamOptimizer(3e-4)
+        opt_c = tf.train.AdamOptimizer(1e-3)
 
         # # sum of two losses used in original implementation
         # total_loss = policy_surrogate + value_loss
@@ -408,10 +414,10 @@ if __name__ == '__main__':
 
     agent = ppo_agent(
         env.observation_space, env.action_space,
-        horizon=8192,
-        gamma=0.995,
-        lam=0.98,
-        train_epochs=20,
+        horizon=4096,
+        gamma=0.99,
+        lam=0.95,
+        train_epochs=30,
         batch_size=128,
     )
 
