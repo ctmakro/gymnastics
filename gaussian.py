@@ -36,8 +36,8 @@ class lowpassgaussian:
             self.sample()
 
     def sample(self):
-        update_factor = .3
-        scaling_factor = 3.31
+        update_factor = .4
+        scaling_factor = 2.74
         stay_factor = 1-update_factor
         g = np.random.normal()
         self.first = self.first*stay_factor+g*update_factor
