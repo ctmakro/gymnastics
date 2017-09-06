@@ -15,6 +15,9 @@ import numpy as np
 from canton import *
 import gym
 
+# low-passed gaussian noise to help with exploration.
+from gaussian import lowpassgaussian as lpgs
+
 # To improve our policy via PPO, we must be able to parametrize and sample from it as a probabilistic distribution. A typical choice for continuous domain problems is the Diagonal Gaussian Distribution. It's simpler (and thus less powerful) than a full Multivariate Gaussian, but should work just fine.
 
 # Knowledge of probabilistics is required to read and comprehend following code.
@@ -41,13 +44,13 @@ class DiagGaussian(Can):
     def entropy(self):
         raise NotImplementedError('bored')
 
-    def sample(self): # sampling from
-        return tf.random_normal(tf.shape(self.mean), mean=self.mean, stddev=self.std)
+    # def sample(self): # sampling from
+    #     return tf.random_normal(tf.shape(self.mean), mean=self.mean, stddev=self.std)
 
     def __call__(self, x):
         [self.mean, self.logstd] = x
         self.std = tf.exp(self.logstd)
-        return self.sample(), self.mean
+        return self.mean, self.std
         # stochastically and deterministically generated actions respectively.
 
 # this is a dual-output dense layer as it outputs the mean and logstd of a diagonal gaussian distribution.
@@ -65,45 +68,28 @@ class DiagGaussianParametrizer(Can):
         return [mean, logstd]
 
 # a simple MLP policy.
-class Policy():
+class Policy(Can):
     def __init__(self, ob_space, ac_space):
+        super().__init__()
 
         # 1. assume probability distribution is continuous
         assert len(ac_space.shape) == 1
-        ac_dims = ac_space.shape[0]
-        ob_dims = ob_space.shape[0]
+        self.ac_dims = ac_dims = ac_space.shape[0]
+        self.ob_dims = ob_dims = ob_space.shape[0]
 
         # 2. build our action network
         rect = Act('tanh')
         # apparently John doesn't give a fuck about ReLUs. Change above line as you wish.
 
-        # the part of actor network before final gaussian output
         c = Can()
         c.add(Dense(ob_dims, 256, stddev=1))
         c.add(rect)
         c.add(Dense(256, 64, stddev=1))
         c.add(rect)
         c.add(DiagGaussianParametrizer(64, ac_dims))
+        self.dg = c.add(DiagGaussian())
         c.chain()
-        self.actor_pre = c
-
-        # full actor network. output will be sampled from gaussian distribution
-        c = Can()
-        c.add(self.actor_pre)
-        c.add(DiagGaussian())
-        c.chain()
-        self.actor = c
-
-        # same as above, but outputs log(pi(s,a)) given s and a
-        c = Can()
-        dg = DiagGaussian()
-        def call(x):
-            state, action = x[0], x[1]
-            param = self.actor_pre(state)
-            sampled, mean = dg(param)
-            return dg.logp(action)
-        c.set_function(call)
-        self.logp = c
+        self.actor = self.add(c)
 
         # 3. build our value network
         c = Can()
@@ -113,32 +99,7 @@ class Policy():
         c.add(rect)
         c.add(Dense(64, 1, stddev=1))
         c.chain()
-        self.critic = c
-
-        # 4. build our action sampler
-        input_state = ph([None], name='act_state_input')
-        stochastic_action, deterministic_action = self.actor(input_state)
-        value_prediction = self.critic(input_state)
-
-        # given observation, generate action
-        def _act(state, stochastic=True):
-            # assume state is ndarray of shape [dims]
-            state = state.view()
-            state.shape = (1,) + state.shape
-
-            sess = get_session()
-            res = sess.run([
-                stochastic_action,
-                deterministic_action,
-                value_prediction
-            ], feed_dict={input_state: state})
-
-            sa, da, vp = res
-            # [batch, dims] [batch, dims] [batch, 1]
-
-            return sa[0], da[0], vp[0,0]
-
-        self.act = _act
+        self.critic = self.add(c)
 
 # our PPO agent.
 class ppo_agent:
@@ -156,25 +117,33 @@ class ppo_agent:
         self.gamma, self.lam, self.horizon = gamma, lam, horizon
         self.train_epochs, self.batch_size = train_epochs, batch_size
 
-        self.train_for_one_step, self.assign_old_eq_new = self.train_gen()
+        self.act, self.train_for_one_step, self.assign_old_eq_new = self.build_functions()
 
         from plotter import interprocess_plotter as plotter
         self.plotter = plotter(2)
 
     # build graph and actions for training with tensorflow.
-    def train_gen(self):
+    def build_functions(self):
         # the 'lrmult' parameter is not implemented.
 
         # improve policy w.r.t. old_policy
         policy, old_policy = self.current_policy, self.old_policy
 
-        # Input Placeholders for training step
-        obs, actions = ph([None]), ph([None]) # you know these two
+        # Input Placeholders
+        states, actions = ph([None]), ph([None]) # you know these two
         adv_target = ph([None]) # Target advantage function, estimated
         ret = ph([None]) # Empirical return, estimated
 
+        # run observation thru the networks
+        policy_mean, policy_std = policy.actor(states)
+        policy_val_pred = policy.critic(states)
+
+        old_policy_mean, old_policy_std = old_policy.actor(states)
+        old_policy_val_pred = old_policy.critic(states)
+
         # ratio = P_now(state, action) / P_old(state, action)
-        ratio = tf.exp(policy.logp([obs, actions]) - old_policy.logp([obs, actions]))
+        # state is previously connected so we will pass in actions only
+        ratio = tf.exp(policy.dg.logp(actions) - old_policy.dg.logp(actions))
 
         # surr1 -> policy gradient
         surr1 = ratio * adv_target
@@ -187,7 +156,7 @@ class ppo_agent:
         policy_surrogate = - tf.reduce_mean(tf.minimum(surr1,surr2))
 
         # how far is our critic's prediction from estimated return?
-        value_prediction = policy.critic(obs)
+        value_prediction = policy_val_pred
         value_loss = tf.reduce_mean((value_prediction-ret)**2)
 
         # learn the actor more slowly to maximize exploration
@@ -202,8 +171,24 @@ class ppo_agent:
         actor_trainstep = opt_a.minimize(policy_surrogate, var_list=policy.actor.get_weights())
         critic_trainstep = opt_c.minimize(value_loss, var_list=policy.critic.get_weights())
 
+        # 1. build our action sampler: given observation, generate action
+        def act(state, stochastic=True):
+            # assume state is ndarray of shape [dims]
+            state = state.view()
+            state.shape = (1,) + state.shape
+
+            res = get_session().run([
+                policy_mean,
+                policy_std,
+                value_prediction
+            ], feed_dict={states: state})
+
+            pm, ps, vp = res
+            # [batch, dims] [batch, dims] [batch, 1]
+            return pm[0], ps[0], vp[0,0]
+
         # update current policy, given sampled trajectories.
-        def train_for_one_step(_obs, _actions, _adv_target, _ret):
+        def train_for_one_step(_states, _actions, _adv_target, _ret):
             # [print(a.shape) for a in [_obs,_actions,_adv_target,_ret]]
             res = get_session().run(
                 [ # perform training and collect losses in one go
@@ -212,7 +197,7 @@ class ppo_agent:
                     # combined_trainstep,
                 ],
                 feed_dict = {
-                    obs:_obs, actions:_actions,
+                    states:_states, actions:_actions,
                     adv_target:_adv_target, ret:_ret,
                 }
             )
@@ -220,13 +205,12 @@ class ppo_agent:
             return res
 
         # assign old_policy's weights equal to current policy.
+        assign_ops = [tf.assign(o,n) for o,n in zip(old_policy.get_weights(), policy.get_weights())]
+        print('total of {} weights to assign from new to old'.format(len(assign_ops)))
         def assign_old_eq_new():
-            ops = [tf.assign(o,n) for o,n in zip(old_policy.actor.get_weights(), policy.actor.get_weights())]
-            ops += [tf.assign(o,n) for o,n in zip(old_policy.critic.get_weights(), policy.critic.get_weights())]
-            get_session().run([ops])
+            get_session().run([assign_ops])
 
-        return train_for_one_step, assign_old_eq_new
-
+        return act, train_for_one_step, assign_old_eq_new
 
     # run a bunch of episodes with current_policy on env and collect some trajectories.
     def collect_trajectories(self, env):
@@ -251,6 +235,14 @@ class ppo_agent:
         ep = 0
         steps = 0
         sum_reward = 0
+
+        # initialize noise sources
+        # this noise has a stddev of 1 but has 1/f^2 spectral density
+        # better exploration than pure gaussian
+        ns = [lpgs() for _ in range(policy.ac_dims)]
+        def noise_sample():
+            return np.array([n.sample() for n in ns], dtype='float32')
+
         while 1:
             # print('collecting episode {}'.format(ep+1), end='\r')
 
@@ -261,7 +253,8 @@ class ppo_agent:
             ob = env.reset()
             while 1:
                 # sample action from given policy
-                sto_action, det_action, val_pred = policy.act(ob)
+                mean, std, val_pred = self.act(ob)
+                sto_action = noise_sample() * std + mean
 
                 # step environment with action and obtain reward
                 new_ob, reward, done, info = env.step(sto_action)
