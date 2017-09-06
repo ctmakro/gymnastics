@@ -228,6 +228,10 @@ class ppo_agent:
         actor_trainstep = opt_a.minimize(policy_surrogate, var_list=policy.actor.get_weights())
         critic_trainstep = opt_c.minimize(value_loss, var_list=policy.critic.get_weights())
 
+        # weight decay if needed
+        decay_factor = 1e-7
+        decay_step = [tf.assign(w, w * (1-decay_factor)) for w in policy.get_only_weights()]
+
         # 1. build our action sampler: given observation, generate action
         def act(state, stochastic=True):
             # assume state is ndarray of shape [dims]
@@ -263,6 +267,7 @@ class ppo_agent:
                     policy_surrogate, value_loss,
                     # actor_trainstep, critic_trainstep,
                     combined_trainstep,
+                    decay_step,
                 ],
                 feed_dict = {
                     states:_states, actions:_actions,
@@ -341,7 +346,7 @@ class ppo_agent:
                 steps+=1
 
                 # if episode is done, either natually or forcifully
-                if done or episode_length >= 1000:
+                if done or episode_length >= 1600:
                     _done[-1] = 1
                     print('episode {} done in {} steps, total reward:{}'.format(
                         ep+1, episode_length, episode_total_reward,
