@@ -27,10 +27,10 @@ from gaussian import lowpassgaussian as lpgs
 # a diagonal gaussian distribution parametrized with mean and logstd
 # original version is in baselines/common/distributions.py
 class DiagGaussian(Can):
-    # -log(P(x)) given P and x
-    def neglogp(self, x):
-        return 0.5 * tf.reduce_sum(((x-self.mean)/self.std)**2, axis=-1) \
-        + 0.5 * np.log(2*np.pi) * tf.to_float(tf.shape(x)[-1]) \
+    # -log(P(s,a)) given P, s and a
+    def neglogp(self, a):
+        return 0.5 * tf.reduce_sum(((a-self.mean)/self.std)**2, axis=-1) \
+        + 0.5 * np.log(2*np.pi) * tf.to_float(tf.shape(a)[-1]) \
         + tf.reduce_sum(self.logstd, axis=-1)
 
     def logp(self, x):
