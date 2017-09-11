@@ -23,46 +23,25 @@ from gaussian import lowpassgaussian as lpgs
 
 # Knowledge of probabilistics is required to read and comprehend following code.
 
-# DiagGaussian layer
-# a diagonal gaussian distribution parametrized with mean and logstd
-# original version is in baselines/common/distributions.py
-class DiagGaussian(Can):
-    # -log(P(s,a)) given P, s and a
-    def neglogp(self, a):
-        return 0.5 * tf.reduce_sum(((a-self.mean)/self.std)**2, axis=-1) \
-        + 0.5 * np.log(2*np.pi) * tf.to_float(tf.shape(a)[-1]) \
-        + tf.reduce_sum(self.logstd, axis=-1)
+tsq = lambda x:tf.square(x)
+tsum = lambda x:tf.reduce_sum(x)
+tmean = lambda x:tf.reduce_mean(x)
+tsumlast = lambda x:tf.reduce_sum(x, axis=[-1])
 
-    def logp(self, x):
-        return - self.neglogp(x)
-
-    # def kl(self, p):
-    #     # KL divergence between this distribution and another distribution
-    #     assert isinstance(p, DiagGaussian)
-    #     return tf.reduce_sum(p.logstd - self.logstd \
-    #     + (self.std**2 + (self.mean-p.mean)**2)/(2.0 * p.std**2)-0.5, axis=-1)
-
-    def entropy(self):
-        raise NotImplementedError('bored')
-
+# Bernoulli layer
+class Bernoulli(Can):
     def __call__(self, x):
-        [self.mean, self.logstd] = x
-        self.std = tf.exp(self.logstd)
-        return [self.mean, self.std]
-        # stochastically and deterministically generated actions respectively.
+        self.probs = Act('sigmoid')(x)
+        return self.probs
 
-# this is a dual-output dense layer as it outputs the mean and logstd of a diagonal gaussian distribution.
-# Put it between a hidden layer and a DiagGaussian layer.
-class DiagGaussianParametrizer(Can):
-    def __init__(self,din,dout):
-        super().__init__()
-        # output amplitude is discounted to center the distributions on start.
-        self.mean_layer = self.add(Dense(din,dout,stddev=1.))
-        self.logstd_layer = self.add(Dense(din,dout,stddev=1.))
-
-    def __call__(self,x):
-        mean, logstd = self.mean_layer(x), self.logstd_layer(x)
-        return [mean, logstd]
+    def logp(self, a): # action be either of [0,1]
+        # a.shape [num, dims]
+        def loge(i):
+            eps = 1e-8
+            return tf.log(i+eps)
+        logp_each = loge(self.probs * a + (1.-self.probs)*(1.-a))
+        logp_total = tsumlast(logp_each)
+        return logp_total # shape [num]
 
 # a simple MLP policy.
 class Policy(Can):
@@ -87,8 +66,8 @@ class Policy(Can):
         c.add(rect)
         c.add(Dense(64, 64, stddev=magic))
         c.add(rect)
-        c.add(DiagGaussianParametrizer(64, ac_dims))
-        self.dg = c.add(DiagGaussian())
+        c.add(Dense(64, ac_dims, stddev=1))
+        self.dist = c.add(Bernoulli())
         c.chain()
         self.actor = self.add(c)
 
@@ -100,7 +79,7 @@ class Policy(Can):
         c.add(rect)
         c.add(Dense(64, 64, stddev=magic))
         c.add(rect)
-        c.add(Dense(64, 1, stddev=magic))
+        c.add(Dense(64, 1, stddev=1))
         c.chain()
         self.critic = self.add(c)
 
@@ -151,6 +130,8 @@ class ppo_agent:
         # limit action into the range specified by environment.
         def action_limiter(action): # assume input mean 0 std 1
             return np.tanh(action) * self.action_multiplier + self.action_bias
+        def action_limiter(action): # assume input uniform [0,1]
+            return (action * 2 - 1) * self.action_multiplier + self.action_bias
         self.action_limiter = action_limiter
 
         # logging of episodic reward.
@@ -191,15 +172,23 @@ class ppo_agent:
         ret = ph([None]) # Empirical return, estimated
 
         # feed observation thru the networks
-        policy_mean, policy_std = policy.actor(states)
+        # policy_mean, policy_std = policy.actor(states)
+        policy_out = policy.actor(states)
         policy_val_pred = policy.critic(states)
 
-        old_policy_mean, old_policy_std = old_policy.actor(states)
+        # old_policy_mean, old_policy_std = old_policy.actor(states)
+        old_policy_out = old_policy.actor(states)
         old_policy_val_pred = old_policy.critic(states)
 
         # ratio = P_now(state, action) / P_old(state, action)
         # state was previously fed so we will pass in actions only
-        ratio = tf.exp(policy.dg.logp(actions) - old_policy.dg.logp(actions))
+        # # IMPORTANT: add epsilon to guarantee numerical stability
+        # eps = 1e-8
+        # pn,po = policy.dg.p(actions)+eps, old_policy.dg.p(actions)+eps
+        # ratio = pn/po
+        # ratio = tf.reduce_prod(ratio, axis=1) #temp
+        logpn,logpo = policy.dist.logp(actions), old_policy.dist.logp(actions)
+        ratio = tf.exp(logpn - logpo)
 
         # surr1 -> policy gradient
         surr1 = ratio * adv_target
@@ -213,7 +202,7 @@ class ppo_agent:
 
         # how far is our critic's prediction from estimated return?
         value_prediction = policy_val_pred
-        value_loss = tf.reduce_mean((value_prediction-ret)**2)
+        value_loss = tf.reduce_mean(tsq(value_prediction-ret))
 
         # optimizer
         opt = tf.train.AdamOptimizer(1e-4)
@@ -224,34 +213,47 @@ class ppo_agent:
         total_loss = policy_surrogate + value_loss
         combined_trainstep = opt.minimize(total_loss, var_list=policy.get_weights())
 
-        # If you want different learning rate, go with the following
+        # If you want different learning rates, go with the following
         actor_trainstep = opt_a.minimize(policy_surrogate, var_list=policy.actor.get_weights())
         critic_trainstep = opt_c.minimize(value_loss, var_list=policy.critic.get_weights())
 
-        # weight decay if needed
-        decay_factor = 1e-7
-        decay_step = [tf.assign(w, w * (1-decay_factor)) for w in policy.get_only_weights()]
+        # # gradient clipping test
+        # grads_vars = opt_a.compute_gradients(policy_surrogate, policy.actor.get_weights())
+        # capped = [(tf.clip_by_value(grad, -1., 1.), var) for grad,var in grads_vars]
+        # actor_trainstep = opt_a.apply_gradients(capped)
+
+        # # weight decay if needed
+        # decay_factor = 1e-5
+        # decay_step = [tf.assign(w, w * (1-decay_factor)) for w in policy.actor.get_only_weights()]
+
+        def insane(k):
+            for x in k:
+                s = np.sum(x)
+                if np.isnan(s) or np.isinf(s):
+                    print(k)
+                    raise Exception('inf/nan')
 
         # 1. build our action sampler: given observation, generate action
         def act(state, stochastic=True):
             # assume state is ndarray of shape [dims]
             state = state.view()
             state.shape = (1,) + state.shape
-
+            insane(state)
             res = get_session().run([
-                policy_mean,
-                policy_std,
+                # policy_mean,
+                # policy_std,
+                policy_out,
                 value_prediction,
             ], feed_dict={states: state})
 
-            pm, ps, vp = res
+            # pm, ps, vp = res
+            po, vp = res
             # [batch, dims] [batch, dims] [batch, 1]
-            if np.isnan(np.sum(pm)) or np.isnan(np.sum(ps)) or np.isnan(np.sum(vp)):
-                print(pm,ps,vp)
-                raise Exception('nan found in result')
 
-            pm,ps,vp = pm[0], ps[0], vp[0,0]
-            return pm,ps,vp
+            # pm,ps,vp = pm[0], ps[0], vp[0,0]
+            # return pm,ps,vp
+            po, vp = po[0], vp[0,0]
+            return po,vp
 
         # 2. value prediction
         def predict_value(_states):
@@ -261,19 +263,21 @@ class ppo_agent:
 
         # 3. trainer. update current policy given processed trajectories.
         def train_for_one_step(_states, _actions, _adv_target, _ret):
-            # [print(a.shape) for a in [_obs,_actions,_adv_target,_ret]]
+            insane([_states,_actions,_adv_target,_ret])
             res = get_session().run(
                 [ # perform training and collect losses in one go
                     policy_surrogate, value_loss,
-                    # actor_trainstep, critic_trainstep,
-                    combined_trainstep,
-                    decay_step,
+                    ratio,logpn,logpo,
+                    actor_trainstep, critic_trainstep,
+                    # combined_trainstep,
+                    # decay_step,
                 ],
                 feed_dict = {
                     states:_states, actions:_actions,
                     adv_target:_adv_target, ret:_ret,
                 }
             )
+            insane([(x if x is not None else 0) for x in res])
             # res[0] is ploss, res[1] is val_loss
             return res
 
@@ -303,13 +307,6 @@ class ppo_agent:
         steps = 0
         sum_reward = 0
 
-        # initialize noise sources
-        # this noise has a stddev of 1 but has 1/f^2 spectral density
-        # better exploration than pure gaussian
-        ns = [lpgs() for _ in range(policy.ac_dims)]
-        def noise_sample():
-            return np.array([n.sample() for n in ns], dtype='float32')
-
         while 1:
             episode_total_reward = 0
             episode_length = 0
@@ -318,19 +315,25 @@ class ppo_agent:
             ob = env.reset()
             while 1:
                 # sample action from given policy
-                mean, std, val_pred = self.act(ob)
-                sto_action = noise_sample() * std + mean
-                sto_limited = self.action_limiter(sto_action)
+                # mean, std, val_pred = self.act(ob)
+                policy_out, val_pred = self.act(ob)
+                sto_action = 1.0*(policy_out > np.random.uniform(size=policy_out.shape))
+                # sto_action = noise_sample() * std + mean
+                # sto_limited = self.action_limiter(sto_action)
+                mean_limited, sto_limited = self.action_limiter(policy_out), self.action_limiter(sto_action)
 
                 # logging actions. comment out if you don't have opencv
                 if True:
-                    mean_limited = self.action_limiter(mean)
+                    # mean_limited = self.action_limiter(mean)
                     disp_mean = mean_limited*5. + np.arange(policy.ac_dims)*12 + 30
                     disp_sto = sto_limited*5. - np.flipud(np.arange(policy.ac_dims))*12 - 30
                     self.loggraph(np.hstack([disp_mean, disp_sto, val_pred]))
 
                 # step environment with action and obtain reward
                 new_ob, reward, done, info = env.step(sto_limited)
+
+                # if steps%20==0:
+                    # env.render()
 
                 # append data into collection
                 s1.append(ob)
@@ -423,11 +426,11 @@ class ppo_agent:
                 nd.shape += (1,)
 
         # standarize/normalize
-        advantage = (advantage - advantage.mean())/advantage.std() * 10
+        advantage = (advantage - advantage.mean())/advantage.std()
 
         # 6. train for some epochs
-        train_epochs = self.train_epochs # 30
-        batch_size = self.batch_size # 512
+        train_epochs = self.train_epochs
+        batch_size = self.batch_size
         data_length = len(s1)
         import time
         lasttimestamp = time.time()
@@ -457,12 +460,12 @@ if __name__ == '__main__':
 
     agent = ppo_agent(
         env.observation_space, env.action_space,
-        horizon=1024,
-        gamma=0.99,
-        lam=0.95,
-        train_epochs=10,
-        batch_size=128,
-        buffer_length=15,
+        horizon=4096, # minimum steps to collect before policy update
+        gamma=0.99, # discount factor for reward
+        lam=0.95, # smooth factor for advantage estimation
+        train_epochs=20, # how many epoch over data for one update
+        batch_size=128, # batch size for training
+        buffer_length=8, # how may iteration of trajectories to keep around for training. Set to 1 for 'original' PPO (higher variance).
     )
 
     get_session().run(gvi()) # init global variables for TF
