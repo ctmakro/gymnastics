@@ -28,20 +28,86 @@ tsum = lambda x:tf.reduce_sum(x)
 tmean = lambda x:tf.reduce_mean(x)
 tsumlast = lambda x:tf.reduce_sum(x, axis=[-1])
 
-# Bernoulli layer
-class Bernoulli(Can):
-    def __call__(self, x):
-        self.probs = Act('sigmoid')(x)
-        return self.probs
+class Dist(Can):
+    def logp(self, a):
+        return - self.neglogp(a)
 
-    def logp(self, a): # action be either of [0,1]
+# Bernoulli layer
+class Bernoulli(Dist):
+    def __call__(self, x):
+        self.logits = x
+        self.probs = Act('sigmoid')(self.logits)
+        self.mean = self.probs
+        return self.sample()
+    def sample(self):
+        return tf.to_float(tf.random_uniform(tf.shape(self.probs)) < self.probs)
+
+    def neglogp(self, a): # action be either of [0,1]
         # a.shape [num, dims]
-        def loge(i):
-            eps = 1e-8
-            return tf.log(i+eps)
-        logp_each = loge(self.probs * a + (1.-self.probs)*(1.-a))
-        logp_total = tsumlast(logp_each)
-        return logp_total # shape [num]
+        # def loge(i):
+        #     eps = 1e-13
+        #     return tf.log(i+eps)
+        # logp_each = loge(self.probs) * a + loge(1.-self.probs)*(1.-a)
+        # logp_total = tsumlast(logp_each)
+        # return logp_total # shape [num]
+
+        return tsumlast(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=tf.to_float(a)))
+
+class Categorical(Dist):
+    def __call__(self,x):
+        self.logits = x # [batch, categories]
+        return self.sample()
+
+    def sample(self):
+        self.mean = tf.argmax(self.logits, axis=-1) # [batch, ]
+        u = tf.random_uniform(tf.shape(self.logits))
+        return tf.argmax(self.logits - tf.log(-tf.log(u)), axis=-1)
+        # returns a number indicating category
+
+    def neglogp(self, x):
+        # return tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.logits, labels=x)
+        # Note: we can't use sparse_softmax_cross_entropy_with_logits because
+        #       the implementation does not allow second-order derivatives...
+        one_hot_actions = tf.one_hot(x, tf.shape(self.logits)[1])
+        return tf.nn.softmax_cross_entropy_with_logits(
+            logits=self.logits,
+            labels=one_hot_actions)
+
+class MultiCategorical(Dist):
+    def __init__(self, dims, cats):
+        super().__init__()
+        self.dims = dims # how many categoricals
+        self.cats = cats # how many category within one categorical
+        self.categoricals = [Categorical() for _ in range(dims)]
+
+    def __call__(self,x): #[batch, dim*categories]
+        self.multilogits = x
+        listlogits = tf.split(self.multilogits,num_or_size_splits=self.dims, axis=1)
+        for c,l in zip(self.categoricals,listlogits):
+            c(l) # feed every categorical
+        return self.sample()
+
+    def sample(self):
+        self.mean = tf.cast(tf.stack([p.mean for p in self.categoricals],axis=-1), tf.int32)
+        return tf.cast(tf.stack([p.sample() for p in self.categoricals], axis=-1), tf.int32)
+
+    def neglogp(self, x): #[batch, dims]
+        return tf.add_n([p.neglogp(px) for p, px in zip(self.categoricals, tf.unstack(x, axis=1))])
+
+class MultiCategoricalContinuous(MultiCategorical):
+    def __init__(self,*args):
+        super().__init__(*args)
+        self.scaler = 1/(self.cats-1)
+
+    def sample(self):
+        ret = super().sample()
+        ret = tf.to_float(ret) * self.scaler
+        self.mean = tf.to_float(self.mean) * self.scaler
+        return ret
+
+    def neglogp(self, x):
+        x = tf.cast(x/self.scaler+1e-8, tf.int32) # integerization
+        return super().neglogp(x)
 
 # a simple MLP policy.
 class Policy(Can):
@@ -66,8 +132,9 @@ class Policy(Can):
         c.add(rect)
         c.add(Dense(64, 64, stddev=magic))
         c.add(rect)
-        c.add(Dense(64, ac_dims, stddev=1))
-        self.dist = c.add(Bernoulli())
+        c.add(Dense(64, ac_dims*10, stddev=1))
+        # self.dist = c.add(Bernoulli())
+        self.dist = c.add(MultiCategoricalContinuous(ac_dims, 10))
         c.chain()
         self.actor = self.add(c)
 
@@ -167,17 +234,17 @@ class ppo_agent:
         policy, old_policy = self.current_policy, self.old_policy
 
         # Input Placeholders
-        states, actions = ph([None]), ph([None]) # you know these two
-        adv_target = ph([None]) # Target advantage function, estimated
-        ret = ph([None]) # Empirical return, estimated
+        states, actions = ph([policy.ob_dims]), ph([policy.ac_dims]) # you know these two
+        adv_target = ph([1]) # Target advantage function, estimated
+        ret = ph([1]) # Empirical return, estimated
 
         # feed observation thru the networks
         # policy_mean, policy_std = policy.actor(states)
-        policy_out = policy.actor(states)
+        policy_sample = policy.actor(states)
         policy_val_pred = policy.critic(states)
 
         # old_policy_mean, old_policy_std = old_policy.actor(states)
-        old_policy_out = old_policy.actor(states)
+        old_policy_sample = old_policy.actor(states)
         old_policy_val_pred = old_policy.critic(states)
 
         # ratio = P_now(state, action) / P_old(state, action)
@@ -206,7 +273,7 @@ class ppo_agent:
 
         # optimizer
         opt = tf.train.AdamOptimizer(1e-4)
-        opt_a = tf.train.AdamOptimizer(1e-3)
+        opt_a = tf.train.AdamOptimizer(3e-4)
         opt_c = tf.train.AdamOptimizer(1e-3)
 
         # sum of two losses used in original implementation
@@ -242,18 +309,20 @@ class ppo_agent:
             res = get_session().run([
                 # policy_mean,
                 # policy_std,
-                policy_out,
+                # policy_out,
+                policy.dist.mean,
+                policy_sample,
                 value_prediction,
             ], feed_dict={states: state})
 
-            # pm, ps, vp = res
-            po, vp = res
+            pm, ps, vp = res
+            # po, vp = res
             # [batch, dims] [batch, dims] [batch, 1]
 
-            # pm,ps,vp = pm[0], ps[0], vp[0,0]
-            # return pm,ps,vp
-            po, vp = po[0], vp[0,0]
-            return po,vp
+            pm,ps,vp = pm[0], ps[0], vp[0,0]
+            return pm,ps,vp
+            # po, vp = po[0], vp[0,0]
+            # return po,vp
 
         # 2. value prediction
         def predict_value(_states):
@@ -263,11 +332,11 @@ class ppo_agent:
 
         # 3. trainer. update current policy given processed trajectories.
         def train_for_one_step(_states, _actions, _adv_target, _ret):
-            insane([_states,_actions,_adv_target,_ret])
+            # insane([_states,_actions,_adv_target,_ret])
             res = get_session().run(
                 [ # perform training and collect losses in one go
                     policy_surrogate, value_loss,
-                    ratio,logpn,logpo,
+                    # ratio,logpn,logpo,
                     actor_trainstep, critic_trainstep,
                     # combined_trainstep,
                     # decay_step,
@@ -277,7 +346,7 @@ class ppo_agent:
                     adv_target:_adv_target, ret:_ret,
                 }
             )
-            insane([(x if x is not None else 0) for x in res])
+            # insane([(x if x is not None else 0) for x in res])
             # res[0] is ploss, res[1] is val_loss
             return res
 
@@ -311,16 +380,23 @@ class ppo_agent:
             episode_total_reward = 0
             episode_length = 0
 
+            # from gaussian import lowpassuniform
+            # noises = [lowpassuniform() for _ in range(self.current_policy.ac_dims)]
+            # def noise_sample():
+            #     return np.array([n.sample() for n in noises])
+            #     # return np.random.uniform(size=(self.current_policy.ac_dims,))
+
             # initial observation
             ob = env.reset()
             while 1:
                 # sample action from given policy
-                # mean, std, val_pred = self.act(ob)
-                policy_out, val_pred = self.act(ob)
-                sto_action = 1.0*(policy_out > np.random.uniform(size=policy_out.shape))
+                mean, sto, val_pred = self.act(ob)
+                # policy_out, val_pred = self.act(ob)
+                # sto_action = 1.0*(policy_out > noise_sample())
+                sto_action = sto
                 # sto_action = noise_sample() * std + mean
                 # sto_limited = self.action_limiter(sto_action)
-                mean_limited, sto_limited = self.action_limiter(policy_out), self.action_limiter(sto_action)
+                mean_limited, sto_limited = self.action_limiter(mean), self.action_limiter(sto_action)
 
                 # logging actions. comment out if you don't have opencv
                 if True:
@@ -332,8 +408,8 @@ class ppo_agent:
                 # step environment with action and obtain reward
                 new_ob, reward, done, info = env.step(sto_limited)
 
-                # if steps%20==0:
-                    # env.render()
+                # if steps%100==0:
+                #     env.render()
 
                 # append data into collection
                 s1.append(ob)
@@ -426,7 +502,7 @@ class ppo_agent:
                 nd.shape += (1,)
 
         # standarize/normalize
-        advantage = (advantage - advantage.mean())/advantage.std()
+        advantage = (advantage - advantage.mean())/(advantage.std()+1e-3)
 
         # 6. train for some epochs
         train_epochs = self.train_epochs
@@ -460,12 +536,12 @@ if __name__ == '__main__':
 
     agent = ppo_agent(
         env.observation_space, env.action_space,
-        horizon=4096, # minimum steps to collect before policy update
+        horizon=2048, # minimum steps to collect before policy update
         gamma=0.99, # discount factor for reward
         lam=0.95, # smooth factor for advantage estimation
-        train_epochs=20, # how many epoch over data for one update
-        batch_size=128, # batch size for training
-        buffer_length=8, # how may iteration of trajectories to keep around for training. Set to 1 for 'original' PPO (higher variance).
+        train_epochs=5, # how many epoch over data for one update
+        batch_size=64, # batch size for training
+        buffer_length=16, # how may iteration of trajectories to keep around for training. Set to 1 for 'original' PPO (higher variance).
     )
 
     get_session().run(gvi()) # init global variables for TF
@@ -475,4 +551,4 @@ if __name__ == '__main__':
         for i in range(iters):
             print('optimization iteration {}/{}'.format(i+1, iters))
             agent.iterate_once(env)
-    # r(250)
+    r(1000)
