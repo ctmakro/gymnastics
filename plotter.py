@@ -2,9 +2,19 @@ import time, os
 from ipc import ipc
 
 def remote_plotter_callback(conn):
-    import matplotlib.pyplot as plt
+    import matplotlib
     import time
     import threading as th
+
+    from sys import platform as _platform
+
+    if _platform == "darwin":
+        # MAC OS X
+        matplotlib.use('qt5Agg')
+        # avoid using cocoa backend, avoid using framework build.
+        # conda install pyqt
+
+    import matplotlib.pyplot as plt
 
     class plotter:
         def __init__(self,num_lines=1):
@@ -13,6 +23,14 @@ def remote_plotter_callback(conn):
             self.y = []
             self.num_lines = num_lines
             self.ys = [[] for i in range(num_lines)]
+
+            self.colors = [
+                [
+                    (i*i*7.9+i*19+7)%0.4+0.5,
+                    (i*i*9.1+i*23+7)%0.4+0.5,
+                    (i*i*11.3+i*29+7)%0.4+0.5,
+                ]
+                for i in range(num_lines)]
 
             self.time = time.time()
 
@@ -28,8 +46,20 @@ def remote_plotter_callback(conn):
             self.lock.acquire()
             if self.anything_new():
                 self.ax.clear()
-                for y in self.ys:
-                    self.ax.plot(self.x,y)
+                self.ax.grid(color='#f0f0f0', linestyle='solid', linewidth=1)
+                for idx in range(len(self.ys)):
+                    x = self.x
+                    y = self.ys[idx]
+                    c = self.colors[idx]
+
+                    if len(y)>10:
+                        ysmooth = [y[0]]
+                        for i in range(1,len(y)):
+                            ysmooth.append(ysmooth[-1]*0.98+y[i]*0.02)
+                        self.ax.plot(x,ysmooth,color=tuple([cp**0.3 for cp in c]))
+
+                    self.ax.plot(x,y,color=tuple(c))
+
             self.lock.release()
             plt.pause(0.2)
             # plt.draw()
