@@ -34,17 +34,11 @@ class SingleEnvSampler:
             # counters
             ep = 0
             steps = 0
-            sum_reward = 0
 
             while 1:
+                # episode start
                 episode_total_reward = 0
                 episode_length = 0
-
-                # from gaussian import lowpassuniform
-                # noises = [lowpassuniform() for _ in range(self.current_policy.ac_dims)]
-                # def noise_sample():
-                #     return np.array([n.sample() for n in noises])
-                #     # return np.random.uniform(size=(self.current_policy.ac_dims,))
 
                 # initial observation
                 ob = env.reset()
@@ -84,33 +78,26 @@ class SingleEnvSampler:
                     episode_length+=1
                     steps+=1
 
-                    if steps % self.horizon == 0: # if enough steps collected
-                        s2 = new_ob
-                        s1.append(s2)
-                        yield s1,a1,r1,_done
-                        s1,a1,r1,_done = [],[],[],[] # clear collection
-                        ep = 0
-
                     # if episode is done, either natually or forcifully
                     if done or episode_length >= 1600:
+                        done = 1
                         _done[-1] = 1
                         print('episode {} done in {} steps, total reward:{}'.format(
                             ep+1, episode_length, episode_total_reward,
                         ))
                         self.agent.plotter.pushys([ep,episode_total_reward])
+                        # break
+
+                    if steps % self.horizon == 0: # if enough steps collected
+                        s2 = new_ob
+                        s1.append(s2)
+                        yield s1,a1,r1,_done
+                        s1,a1,r1,_done = [],[],[],[] # clear collection
+
+                    if done:
                         break
 
-                sum_reward += episode_total_reward
-                # print('{}/{} steps collected in {} episode(s)'.format(steps,horizon,ep+1), end='\r')
-                # if steps>= horizon:
-                #     break
-                # else:
-                #     ep+=1
-
                 ep+=1
-
-            # print('mean reward per episode:{}'.format(sum_reward/(ep+1)))
-            # return s1,a1,r1,_done
 
         def loop():
             traj_generator = collect_trajectories_longrunning()
