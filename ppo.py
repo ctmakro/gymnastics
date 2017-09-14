@@ -532,7 +532,7 @@ class ppo_agent:
         import time
         lasttimestamp = time.time()
 
-        print('training network on {} datapoints'.format(data_length))
+        print('training network on {} datapoints for {} epochs'.format(data_length,train_epochs))
         for e in range(train_epochs):
             for j in range(0, data_length-batch_size+1, batch_size):
                 # ignore tail
