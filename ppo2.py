@@ -242,11 +242,11 @@ if __name__ == '__main__':
 
     agent = ppo_agent2(
         env.observation_space, env.action_space,
-        horizon=2048, # minimum steps to collect before policy update
+        horizon=512, # minimum steps to collect before policy update
         gamma=0.99, # discount factor for reward
         lam=0.95, # smooth factor for advantage estimation
-        train_epochs=10, # how many epoch over data for one update
-        batch_size=64, # batch size for training
+        train_epochs=15, # how many epoch over data for one update
+        batch_size=4096, # batch size for training
         buffer_length=16, # not used in parallelized mode
     )
 
@@ -254,7 +254,7 @@ if __name__ == '__main__':
 
     if True:
         # parallelized
-        process_count = 7
+        process_count = 32
         samplers = [SingleEnvSampler(remote_env(), agent) for i in range(process_count)]
 
         def r(iters=2):
