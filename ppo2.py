@@ -93,6 +93,7 @@ class SingleEnvSampler:
                         s1.append(s2)
                         yield s1,a1,r1,_done
                         s1,a1,r1,_done = [],[],[],[] # clear collection
+                        ep = 0
 
                     if done:
                         break
