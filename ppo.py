@@ -17,7 +17,7 @@ from canton import *
 import gym
 
 # low-passed gaussian noise to help with exploration.
-from gaussian import lowpassgaussian as lpgs
+# from gaussian import lowpassgaussian as lpgs
 
 # To improve our policy via PPO, we must be able to parametrize and sample from it as a probabilistic distribution. A typical choice for continuous domain problems is the Diagonal Gaussian Distribution. It's simpler (and thus less powerful) than a full Multivariate Gaussian, but should work just fine.
 
@@ -169,6 +169,9 @@ class traj_buffer:
             for i in range(len(c)):
                 collected[i] += c[i]
         return collected
+
+    def get_all_raw(self):
+        return list(self.buf)
 
 # our PPO agent.
 class ppo_agent:
@@ -452,7 +455,8 @@ class ppo_agent:
         s1,a1,r1,done = collected
         vp1 = self.predict_value(s1)
 
-        T = len(s1)
+        T = len(a1) # [s1] might be longer than the others by one.
+        # since to predict vp1 for T+1 step, we might append last s2 into [s1]
         advantage = [None]*T
 
         last_adv = 0
@@ -481,13 +485,25 @@ class ppo_agent:
         # 3. load historic trajectories from buffer
         collected = self.traj_buffer.get_all()
 
-        # 4. estimate value target and advantage with current critic, from loaded trajectories
+        # 4. estimate advantage and TD(lambda) return
         collected = self.append_vtarg_and_adv(collected)
+
+        # 5. processing, numpyization
+        collected = self.usual_data_processing(collected)
+        # s1,a1,r1,done,advantage,tdlamret = self.usual_data_processing(collected)
+
+        # 6. train for some epochs
+        self.usual_feed_training(collected)
+
+        print('iteration done.')
+
+    # data processing moved here
+    def usual_data_processing(self,collected):
         s1,a1,r1,done,advantage,tdlamret = collected
 
         # 5. data processing
         # shuffling
-        indices = np.arange(len(collected[0]))
+        indices = np.arange(len(a1))
         np.random.shuffle(indices)
 
         # numpyization
@@ -504,6 +520,11 @@ class ppo_agent:
         # standarize/normalize
         advantage = (advantage - advantage.mean())/(advantage.std()+1e-3)
 
+        return s1,a1,r1,done,advantage,tdlamret
+
+    # feed-train moved here
+    def usual_feed_training(self,collected):
+        s1,a1,r1,done,advantage,tdlamret = collected
         # 6. train for some epochs
         train_epochs = self.train_epochs
         batch_size = self.batch_size
@@ -526,7 +547,6 @@ class ppo_agent:
                     lasttimestamp = time.time()
                     print(' '*30, 'ploss: {:6.4f} vloss: {:6.4f}'.format(
                         ploss, vloss),end='\r')
-        print('iteration done.')
 
 if __name__ == '__main__':
     # get swingy
@@ -536,10 +556,10 @@ if __name__ == '__main__':
 
     agent = ppo_agent(
         env.observation_space, env.action_space,
-        horizon=2048, # minimum steps to collect before policy update
+        horizon=1024, # minimum steps to collect before policy update
         gamma=0.99, # discount factor for reward
         lam=0.95, # smooth factor for advantage estimation
-        train_epochs=5, # how many epoch over data for one update
+        train_epochs=10, # how many epoch over data for one update
         batch_size=64, # batch size for training
         buffer_length=16, # how may iteration of trajectories to keep around for training. Set to 1 for 'original' PPO (higher variance).
     )
