@@ -45,6 +45,22 @@ class lowpassgaussian:
 
         return self.second * scaling_factor
 
+# samples are still evenly drawn from [0,1], but higher low-freq component.
+class lowpassuniform:
+    def __init__(self):
+        self.first = 0
+
+        for i in range(2):
+            self.sample()
+
+    def sample(self):
+        u = np.random.uniform()
+        if np.random.uniform()<0.5: # for 20% of the time
+            self.first = u
+        else:
+            pass
+        return self.first
+
 if __name__ == '__main__':
     lpg = lowpassgaussian()
     for p in range(10):
