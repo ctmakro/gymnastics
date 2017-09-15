@@ -468,7 +468,7 @@ class ppo_agent:
             last_adv = advantage[t]
 
         tdlamret = [a+v for a,v in zip(advantage, vp1)]
-        return s1,a1,r1,done, advantage,tdlamret
+        return [s1,a1,r1,done, advantage,tdlamret]
 
     # perform one policy iteration
     def iterate_once(self, env):
