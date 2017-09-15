@@ -127,6 +127,8 @@ class SingleEnvSampler:
             else:
                 return c
 
+flatten = lambda l: [item for sublist in l for item in sublist]
+
 class ppo_agent2(ppo_agent):
 
     # perform one policy iteration w/ a sampler
@@ -175,14 +177,17 @@ class ppo_agent2(ppo_agent):
 
     # perform one policy iteration w/ an array of samplers
     def iterate_once_on_samplers(self, samplers):
-        # 0. assign new to old
         self.assign_old_eq_new()
-
-        # # 1. collect trajectories w/ current policy
-        # collected = self.collect_trajectories(env)
 
         [s.start_collecting(self.horizon) for s in samplers] # signal start
         collected = [s.get_result() for s in samplers] # blocking
+
+        # buffer
+        self.traj_buffer.push(collected)
+        collected = self.traj_buffer.get_all_raw()
+
+        collected = flatten(collected) # reduce 1 layer of lists
+
         collected = [self.append_vtarg_and_adv(c) for c in collected] # process each individually
 
         collected = self.chain_list_of_trajectories(collected)
@@ -235,17 +240,17 @@ if __name__ == '__main__':
         horizon=512, # minimum steps to collect before policy update
         gamma=0.99, # discount factor for reward
         lam=0.95, # smooth factor for advantage estimation
-        train_epochs=15, # how many epoch over data for one update
-        batch_size=4096, # batch size for training
-        buffer_length=16, # not used in parallelized mode
+        train_epochs=10, # how many epoch over data for one update
+        batch_size=128, # batch size for training
+        buffer_length=16,
     )
 
     get_session().run(gvi()) # init global variables for TF
 
-    go_parallel = False
+    go_parallel = True
     if go_parallel:
         # parallelized
-        process_count = 32
+        process_count = 4
         samplers = [SingleEnvSampler(remote_env(), agent) for i in range(process_count)]
 
         def r(iters=2):
