@@ -467,6 +467,10 @@ class ppo_agent:
             advantage[t] = delta + gamma * lam * (1-done[t]) * last_adv
             last_adv = advantage[t]
 
+        if len(s1) > len(a1):
+            s1 = list(s1) # create a new list without intefereing original
+            s1.pop() # remove last
+
         tdlamret = [a+v for a,v in zip(advantage, vp1)]
         return [s1,a1,r1,done, advantage,tdlamret]
 
@@ -500,6 +504,9 @@ class ppo_agent:
     # data processing moved here
     def usual_data_processing(self,collected):
         s1,a1,r1,done,advantage,tdlamret = collected
+
+        l = len(s1)
+        assert l==len(a1)and l==len(r1)and l==len(done)and l==len(advantage)and l==len(tdlamret) # all inputs must be of the same length
 
         # 5. data processing
         # shuffling

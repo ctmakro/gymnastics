@@ -91,7 +91,7 @@ class SingleEnvSampler:
                     if steps % self.horizon == 0: # if enough steps collected
                         s2 = new_ob
                         s1.append(s2)
-                        yield s1,a1,r1,_done
+                        yield [s1,a1,r1,_done]
                         s1,a1,r1,_done = [],[],[],[] # clear collection
                         ep = 0
 
@@ -162,14 +162,8 @@ class ppo_agent2(ppo_agent):
 
     # [[[s1],[a1],[r1]...],[[s1],[a1],[r1]...]...] => [[s1],[a1],[r1]...]
     def chain_list_of_trajectories(self, collected_list):
-        # this function is designed with extreme carefulness to prevent data corruption...
+        # this function was designed with extreme carefulness to prevent data corruption...
         collected = collected_list
-
-        # discard s2 from [s1]
-        for c in collected:
-            if len(c[0]) > len(c[1]): # if len(s1) > len(a1)
-                c[0] = list(c[0]) # create a new list without intefereing original
-                c[0].pop() # pop last
 
         # join all collected together
         c0 = list(collected[0])
