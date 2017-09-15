@@ -545,8 +545,8 @@ class ppo_agent:
                 ploss, vloss = res[0],res[1]
                 if time.time() - lasttimestamp > 0.2:
                     lasttimestamp = time.time()
-                    print(' '*30, 'ploss: {:6.4f} vloss: {:6.4f}'.format(
-                        ploss, vloss),end='\r')
+                    print(' '*30, 'epoch: {}/{} ploss: {:6.4f} vloss: {:6.4f}'.format(
+                        e+1,train_epochs,ploss, vloss),end='\r')
 
 if __name__ == '__main__':
     # get swingy
