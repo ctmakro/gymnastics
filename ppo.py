@@ -452,8 +452,8 @@ class ppo_agent:
         gamma = self.gamma # 0.99
         lam = self.lam # 0.95
 
-        s1,a1,r1,done = collected
-        vp1 = self.predict_value(s1)
+        [s1,a1,r1,done] = collected
+        vp1 = self.predict_value(np.array(s1))
 
         T = len(a1) # [s1] might be longer than the others by one.
         # since to predict vp1 for T+1 step, we might append last s2 into [s1]
