@@ -104,8 +104,8 @@ class SingleEnvSampler:
             traj_generator = collect_trajectories_longrunning()
             while 1:
                 if self.running == True:
-                    self.collected = traj_generator.__next__()
                     self.running = False
+                    self.collected = traj_generator.__next__()
                 else:
                     time.sleep(0.2)
 
@@ -121,10 +121,11 @@ class SingleEnvSampler:
     # block until enough samples collected from env
     def get_result(self):
         while 1:
-            if self.collected is None:
-                time.sleep(0.05)
+            c = self.collected
+            if c is None:
+                time.sleep(0.1)
             else:
-                return self.collected
+                return c
 
 class ppo_agent2(ppo_agent):
 
@@ -143,10 +144,12 @@ class ppo_agent2(ppo_agent):
         self.traj_buffer.push(collected)
 
         # 3. load historic trajectories from buffer
-        collected = self.traj_buffer.get_all()
+        collected = self.traj_buffer.get_all_raw()
 
         # 4. estimate advantage and TD(lambda) return
-        collected = self.append_vtarg_and_adv(collected)
+        collected = [self.append_vtarg_and_adv(c) for c in collected] # process each individually
+
+        collected = self.chain_list_of_trajectories(collected)
 
         # 5. processing, numpyization
         collected = self.usual_data_processing(collected)
@@ -156,6 +159,25 @@ class ppo_agent2(ppo_agent):
         self.usual_feed_training(collected)
 
         print('iteration done.')
+
+    # [[[s1],[a1],[r1]...],[[s1],[a1],[r1]...]...] => [[s1],[a1],[r1]...]
+    def chain_list_of_trajectories(self, collected_list):
+        # this function is designed with extreme carefulness to prevent data corruption...
+        collected = collected_list
+
+        # discard s2 from [s1]
+        for c in collected:
+            if len(c[0]) > len(c[1]): # if len(s1) > len(a1)
+                c[0] = list(c[0]) # create a new list without intefereing original
+                c[0].pop() # pop last
+
+        # join all collected together
+        c0 = list(collected[0])
+        for i in range(1, len(collected)):
+            for j in range(len(collected[i])):
+                c0[j] = c0[j] + collected[i][j]
+
+        return c0
 
     # perform one policy iteration w/ an array of samplers
     def iterate_once_on_samplers(self, samplers):
@@ -169,21 +191,7 @@ class ppo_agent2(ppo_agent):
         collected = [s.get_result() for s in samplers] # blocking
         collected = [self.append_vtarg_and_adv(c) for c in collected] # process each individually
 
-        # tuples to lists
-        collected = [list(c) for c in collected]
-
-        # discard s2 from [s1]
-        for c in collected:
-            if len(c[0]) > len(c[1]): # if len(s1) > len(a1)
-                c[0].pop() # pop last
-
-        # join all collected together
-        c0 = collected[0]
-        for i in range(1, len(collected)):
-            for j in range(len(collected[i])):
-                c0[j] = c0[j] + collected[i][j]
-
-        collected = c0
+        collected = self.chain_list_of_trajectories(collected)
 
         # 5. ready to train
         collected = self.usual_data_processing(collected)
@@ -251,7 +259,6 @@ if __name__ == '__main__':
                 print('optimization iteration {}/{}'.format(i+1, iters))
                 # agent.iterate_once(env)
                 agent.iterate_once_on_samplers(samplers)
-        r(1000)
     else:
         # parallelized infrastructure, but test with one instance only
         sampler = SingleEnvSampler(env, agent)
@@ -262,4 +269,4 @@ if __name__ == '__main__':
                 print('optimization iteration {}/{}'.format(i+1, iters))
                 # agent.iterate_once(env)
                 agent.iterate_once_on_sampler(sampler)
-        r(1000)
+    r(1000)
