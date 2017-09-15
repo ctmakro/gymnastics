@@ -61,8 +61,11 @@ def remote_plotter_callback(conn):
                     init = 5
                     if len(y)>init:
                         ysmooth = [sum(y[0:init])/init]*init
-                        for i in range(init,len(y)):
-                            ysmooth.append(ysmooth[-1]*0.98+y[i]*0.02)
+                        for i in range(init,len(y)): # first order
+                            ysmooth.append(ysmooth[-1]*0.9+y[i]*0.1)
+                        for i in range(init,len(y)): # second order
+                            ysmooth[i] = ysmooth[i-1]*0.9+ysmooth[i]*0.1
+
                         self.ax.plot(x,ysmooth,lw=2,color=tuple([cp**0.3 for cp in c]),alpha=0.5)
 
             self.lock.release()
