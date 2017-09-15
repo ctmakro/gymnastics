@@ -181,9 +181,12 @@ class ppo_agent:
         gamma=0.99, lam=0.95,
         train_epochs=10, batch_size=64,
         buffer_length=10,
+        policy=None
         ):
-        self.current_policy = Policy(ob_space, ac_space)
-        self.old_policy = Policy(ob_space, ac_space)
+        if policy is None:
+            policy = Policy
+        self.current_policy = policy(ob_space, ac_space)
+        self.old_policy = policy(ob_space, ac_space)
         self.current_policy.actor.summary()
         self.current_policy.critic.summary()
 
