@@ -248,7 +248,8 @@ if __name__ == '__main__':
 
     get_session().run(gvi()) # init global variables for TF
 
-    if True:
+    go_parallel = False
+    if go_parallel:
         # parallelized
         process_count = 32
         samplers = [SingleEnvSampler(remote_env(), agent) for i in range(process_count)]
