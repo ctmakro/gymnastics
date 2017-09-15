@@ -47,19 +47,21 @@ def remote_plotter_callback(conn):
             if self.anything_new():
                 self.ax.clear()
                 self.ax.grid(color='#f0f0f0', linestyle='solid', linewidth=1)
+
+                x = self.x
+
                 for idx in range(len(self.ys)):
-                    x = self.x
                     y = self.ys[idx]
                     c = self.colors[idx]
                     self.ax.plot(x,y,color=tuple(c))
 
                 for idx in range(len(self.ys)):
-                    x = self.x
                     y = self.ys[idx]
                     c = self.colors[idx]
-                    if len(y)>10:
-                        ysmooth = [y[0]]
-                        for i in range(1,len(y)):
+                    init = 5
+                    if len(y)>init:
+                        ysmooth = [sum(y[0:init])/init]*init
+                        for i in range(init,len(y)):
                             ysmooth.append(ysmooth[-1]*0.98+y[i]*0.02)
                         self.ax.plot(x,ysmooth,lw=2,color=tuple([cp**0.3 for cp in c]),alpha=0.5)
 
