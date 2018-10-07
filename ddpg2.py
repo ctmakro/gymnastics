@@ -189,10 +189,10 @@ class nnagent(object):
         # add gaussian noise.
         c = Can()
         c.add(Dense(inputdims,256))
-        c.add(Act('relu'))
-        # c.add(Dense(256,128))
-        # c.add(Act('lrelu'))
-        c.add(Dense(256,outputdims))
+        c.add(Act('lrelu'))
+        c.add(Dense(256,64))
+        c.add(Act('lrelu'))
+        c.add(Dense(64,outputdims))
 
         if self.is_continuous:
             c.add(Act('tanh'))
@@ -210,8 +210,8 @@ class nnagent(object):
         # concat state and action
         den1 = c.add(Dense(inputdims,256))
         den2 = c.add(Dense(256+actiondims,256))
-        den3 = c.add(Dense(256, 128))
-        den4 = c.add(Dense(128,1))
+        den3 = c.add(Dense(256, 64))
+        den4 = c.add(Dense(64,1))
 
         def call(i):
             state = i[0]
@@ -277,7 +277,7 @@ class nnagent(object):
         opt_actor = tf.train.AdamOptimizer(1e-4)
         opt_critic = tf.train.AdamOptimizer(3e-4)
         # opt_actor = tf.train.MomentumOptimizer(1e-1,momentum=0.9)
-        cstep = opt_critic.minimize(critic_loss+decay_c, var_list=cw)
+        cstep = opt_critic.minimize(critic_loss, var_list=cw)
         astep = opt_actor.minimize(actor_loss, var_list=aw)
 
         self.feedcounter=0
@@ -345,14 +345,18 @@ class nnagent(object):
         # global que # python 2 quirk
         self.que = np.zeros((self.inputdims,),dtype='float32') # list of recent history actions
 
-        def quein(observation):
-            # global que # python 2 quirk
-            length = len(observation)
-            self.que[0:-length] = self.que[length:] # left shift
-            self.que[-length:] = np.array(observation)
+        if self.observation_stack_factor>1:
+            def quein(observation):
+                # global que # python 2 quirk
+                length = len(observation)
+                self.que[0:-length] = self.que[length:] # left shift
+                self.que[-length:] = np.array(observation)
 
-        def quecopy():
-            return self.que.copy()
+            def quecopy():
+                return self.que.copy()
+        else:
+            def quein(observation): self.que = np.array(observation)
+            def quecopy():return self.que.view()
 
         # what the agent see as state is a stack of history observations.
 

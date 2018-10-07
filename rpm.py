@@ -11,7 +11,9 @@ class rpm(object):
 
     def add(self, obj):
         if self.size() >= self.buffer_size:
-            self.buffer.popleft()
+            # self.buffer.popleft()
+            # self.buffer = self.buffer[1:]
+            self.buffer.pop(0)
         self.buffer.append(obj)
 
     def size(self):
